@@ -1,4 +1,10 @@
+import type { WSEnvelope, StageID } from '../lib/contract';
+
 export type StepId = 'S0' | 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7';
+
+export type MockWSEnvelope = WSEnvelope;
+
+export type MockStageId = StageID;
 
 export type LossSurfaceSpec =
   | { kind: 'fixed_example'; domainHalf: number; zScale: number }
