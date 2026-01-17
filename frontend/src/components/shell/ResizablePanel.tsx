@@ -23,7 +23,7 @@ export default function ResizablePanel({
     return (
       <div
         className={
-          'w-12 bg-replit-surface shrink-0 flex flex-col items-center py-2 gap-2 ' +
+          'w-12 bg-replit-surface/65 backdrop-blur-xl shrink-0 flex flex-col items-center py-2 gap-2 ' +
           (side === 'left' ? 'border-r border-replit-border' : 'border-l border-replit-border')
         }
       >
@@ -35,7 +35,7 @@ export default function ResizablePanel({
   return (
     <div
       className={
-        'bg-replit-surface shrink-0 relative ' +
+        'bg-replit-surface/70 backdrop-blur-xl shrink-0 relative ' +
         (side === 'left' ? 'border-r border-replit-border' : 'border-l border-replit-border')
       }
       style={{ width: width ? `${width}px` : undefined }}

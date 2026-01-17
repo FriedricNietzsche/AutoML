@@ -11,8 +11,8 @@ export default function DashboardPane({ files }: DashboardPaneProps) {
   // The Dashboard reads file content, so it should be reactive if files prop changes.
   
   return (
-    <div className="h-full flex flex-col bg-replit-bg">
-       <div className="h-10 bg-replit-surface border-b border-replit-border flex items-center px-4 justify-between shrink-0">
+    <div className="h-full flex flex-col bg-replit-bg/30 backdrop-blur-xl">
+       <div className="h-10 bg-replit-surface/60 backdrop-blur border-b border-replit-border/70 flex items-center px-4 justify-between shrink-0">
           <div className="flex items-center gap-2 text-replit-text font-medium text-sm">
              <BarChart2 size={16} />
              <span>Training Metrics</span>

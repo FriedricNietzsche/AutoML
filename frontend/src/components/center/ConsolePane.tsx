@@ -15,16 +15,16 @@ export default function ConsolePane({ logsText }: ConsolePaneProps) {
   }, [logsText]);
 
   return (
-    <div className="h-full flex flex-col bg-replit-bg">
+    <div className="h-full flex flex-col bg-replit-bg/30 backdrop-blur-xl">
       {/* Console Header */}
-      <div className="h-10 bg-replit-surface border-b border-replit-border flex items-center justify-between px-3 shrink-0">
+      <div className="h-10 bg-replit-surface/60 backdrop-blur border-b border-replit-border/70 flex items-center justify-between px-3 shrink-0">
         <div className="flex items-center gap-2">
           <Terminal className="w-4 h-4 text-replit-textMuted" />
           <span className="text-sm text-replit-text font-medium">Console</span>
         </div>
         <button
           onClick={() => setInput('')}
-          className="p-1.5 hover:bg-replit-surfaceHover rounded transition-colors"
+          className="p-1.5 hover:bg-replit-surface/70 rounded transition-colors"
           title="Clear input"
         >
           <Trash2 className="w-4 h-4 text-replit-textMuted" />
