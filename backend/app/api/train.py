@@ -15,6 +15,7 @@ from app.events.bus import event_bus
 from app.events.schema import EventType, StageID, StageStatus
 from app.ml.trainers.tabular_trainer import TabularTrainer, TrainConfig
 from app.ml.trainers.image_trainer import ImageTrainer, ImageTrainConfig
+from app.ml.trainers.time_series_trainer import TimeSeriesTrainer, TimeSeriesConfig
 from app.orchestrator.conductor import conductor
 from app.api.assets import ASSET_ROOT
 
@@ -69,4 +70,26 @@ async def train_image(project_id: str, data_subdir: Optional[str] = Body(None, e
     await conductor.transition_to(project_id, StageID.TRAIN, StageStatus.COMPLETED, "Training complete")
     await conductor.transition_to(project_id, StageID.REVIEW_EDIT, StageStatus.IN_PROGRESS, "Review artifacts")
 
+    return result
+
+
+@router.post("/{project_id}/train/time_series")
+async def train_time_series(
+    project_id: str,
+    value_col: str = Body("value", embed=True),
+    lags: int = Body(3, embed=True),
+):
+    project_dir = _project_dir(project_id)
+    csv_files = list(project_dir.glob("*.csv"))
+    if not csv_files:
+        raise HTTPException(status_code=404, detail="No CSV found for project")
+    df = pd.read_csv(csv_files[0])
+    max_rows = int(os.getenv("TRAIN_MAX_ROWS", "200"))
+    if len(df) > max_rows:
+        df = df.sample(n=max_rows, random_state=42)
+    trainer = TimeSeriesTrainer(TimeSeriesConfig(project_id=project_id, value_col=value_col, lags=lags))
+    await conductor.transition_to(project_id, StageID.TRAIN, StageStatus.IN_PROGRESS, "Training started")
+    result = await trainer.train(df)
+    await conductor.transition_to(project_id, StageID.TRAIN, StageStatus.COMPLETED, "Training complete")
+    await conductor.transition_to(project_id, StageID.REVIEW_EDIT, StageStatus.IN_PROGRESS, "Review artifacts")
     return result
