@@ -84,3 +84,9 @@ export function isValidKaggleDatasetLink(link: string): boolean {
   if (!trimmed) return false;
   return /(^|https?:\/\/)(www\.)?kaggle\.com\/datasets\/.+/i.test(trimmed);
 }
+
+export function isValidHuggingFaceDatasetLink(link: string): boolean {
+  const trimmed = link.trim();
+  if (!trimmed) return false;
+  return /(^|https?:\/\/)(www\.)?huggingface\.co\/datasets\/.+/i.test(trimmed);
+}

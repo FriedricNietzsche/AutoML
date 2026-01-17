@@ -25,6 +25,7 @@ export const initialBackendDriverState: BackendDriverState = {
 export function onBackendEvent(state: BackendDriverState, event: MockWSEnvelope): BackendDriverState {
   const name = event.event?.name;
   const payload = event.event?.payload as Record<string, unknown> | undefined;
+
   if (name === 'STAGE_STATUS') {
     const stageId = payload?.stage_id as StageID | undefined;
     if (stageId) return { ...state, currentStage: stageId };
@@ -51,6 +52,7 @@ export function onBackendEvent(state: BackendDriverState, event: MockWSEnvelope)
   }
   if (name === 'REPORT_READY') return { ...state, reportReady: true };
   if (name === 'EXPORT_READY') return { ...state, exportReady: true };
+
   return state;
 }
 
@@ -69,35 +71,39 @@ export function useMockBackend(options?: MockStreamOptions) {
   } | null>(null);
   const runIdRef = useRef(0);
 
-  const start = useCallback((override?: MockStreamOptions) => {
-    if (isRunning) return;
-    const stream = createMockAutoMLStream({ ...options, ...override });
-    apiRef.current = {
-      confirmStep: () => undefined,
-      selectPlan: () => undefined,
-      pause: () => undefined,
-      resume: () => undefined,
-      stop: () => undefined,
-    };
-    setIsPaused(false);
-    setIsRunning(true);
-    setEvents([]);
-    runIdRef.current += 1;
-    const runId = runIdRef.current;
+  const start = useCallback(
+    (override?: MockStreamOptions) => {
+      if (isRunning) return;
+      const stream = createMockAutoMLStream({ ...options, ...override });
+      apiRef.current = {
+        confirmStep: () => undefined,
+        selectPlan: () => undefined,
+        pause: () => undefined,
+        resume: () => undefined,
+        stop: () => undefined,
+      };
+      setIsPaused(false);
+      setIsRunning(true);
+      setEvents([]);
+      runIdRef.current += 1;
+      const runId = runIdRef.current;
 
-    (async () => {
-      try {
-        for await (const event of stream) {
-          if (runIdRef.current !== runId) return;
-          setEvents((prev) => [...prev, event]);
-          const stageId = event.event?.payload?.stage_id as StageID | undefined;
-          if (event.event?.name === 'STAGE_STATUS' && stageId) setCurrentStage(stageId);
+      (async () => {
+        try {
+          for await (const event of stream) {
+            if (runIdRef.current !== runId) return;
+            setEvents((prev) => [...prev, event]);
+            const payload = event.event?.payload as Record<string, unknown> | undefined;
+            const stageId = payload?.stage_id as StageID | undefined;
+            if (event.event?.name === 'STAGE_STATUS' && stageId) setCurrentStage(stageId);
+          }
+        } finally {
+          if (runIdRef.current === runId) setIsRunning(false);
         }
-      } finally {
-        if (runIdRef.current === runId) setIsRunning(false);
-      }
-    })();
-  }, [isRunning, options]);
+      })();
+    },
+    [isRunning, options]
+  );
 
   const stop = useCallback(() => {
     apiRef.current?.stop();
