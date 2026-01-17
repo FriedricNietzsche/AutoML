@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useReducedMotion } from 'framer-motion';
 import { ChevronLeft, ChevronDown, ChevronUp, ExternalLink, Plus, SlidersHorizontal, X, ArrowUp } from 'lucide-react';
-import { isValidKaggleDatasetLink, type BuildSession } from '../../lib/buildSession';
+import { isValidHuggingFaceDatasetLink, type BuildSession } from '../../lib/buildSession';
 import StageTimeline from './StageTimeline';
 
 interface AIBuilderPanelProps {
@@ -77,8 +77,8 @@ export default function AIBuilderPanel({
   const addDataset = () => {
     const next = datasetDraft.trim();
     if (!next) return;
-    if (!isValidKaggleDatasetLink(next)) {
-      setDatasetError('Invalid dataset link. Use a Kaggle dataset URL.');
+    if (!isValidHuggingFaceDatasetLink(next)) {
+      setDatasetError('Invalid dataset link. Use a Hugging Face dataset URL.');
       return;
     }
     if (datasetLinks.includes(next)) {
@@ -304,7 +304,7 @@ export default function AIBuilderPanel({
                           setDatasetDraft(e.target.value);
                           if (datasetError) setDatasetError(null);
                         }}
-                        placeholder="Kaggle dataset link…"
+                        placeholder="Hugging Face dataset link…"
                         className="w-full rounded-xl border border-replit-border bg-replit-bg px-4 py-3 pr-20 text-sm outline-none focus:border-replit-accent/80 focus:ring-2 focus:ring-replit-accent/20 transition"
                       />
                       <button
