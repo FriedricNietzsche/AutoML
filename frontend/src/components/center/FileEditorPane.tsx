@@ -50,7 +50,7 @@ export default function FileEditorPane({
   const detectedLang = language === 'typescript' ? getLanguage(filePath) : language;
 
   return (
-    <div className="h-full w-full bg-replit-bg">
+    <div className="h-full w-full bg-replit-bg/20 backdrop-blur-xl">
       <Editor
         height="100%"
         path={filePath}

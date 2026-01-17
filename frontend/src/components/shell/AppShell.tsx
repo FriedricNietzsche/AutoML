@@ -22,6 +22,7 @@ import type { BuildSession, ChatMessage } from '../../lib/buildSession';
 import { useTheme } from '../../lib/theme';
 import { FolderOpen, PanelLeftOpen, PanelRightOpen } from 'lucide-react';
 import { useProjectStore } from '../../store/projectStore';
+import ThemedBackground from '../ThemedBackground';
 
 const nowTs = () => Date.now();
 
@@ -537,10 +538,8 @@ export default function AppShell() {
   const isDark = useMemo(() => theme === 'midnight', [theme]);
 
   return (
-    <div className="h-screen flex flex-col bg-replit-bg text-replit-text relative overflow-hidden">
-      <div className="absolute inset-0 -z-10 pointer-events-none">
-        <div className="home-bg-static" />
-      </div>
+    <div className="h-screen flex flex-col bg-transparent text-replit-text relative overflow-hidden">
+      <ThemedBackground isDark={isDark} />
 
       <TopBar
         isBuildReady={isBuildReady}

@@ -1,4 +1,4 @@
-import { CheckCircle2, Database, Download, Loader2, Lock, Moon, Play, Sun, Wifi } from 'lucide-react';
+import { Brain, CheckCircle2, Database, Download, Loader2, Lock, Moon, Play, Sun, Wifi } from 'lucide-react';
 import type { ConnectionStatus } from '../../lib/ws';
 
 interface TopBarProps {
@@ -38,15 +38,16 @@ export default function TopBar({
       : 'bg-replit-surface text-replit-textMuted border-replit-border';
 
   return (
-    <header className="h-12 bg-replit-surface border-b border-replit-border flex items-center justify-between px-4 shrink-0">
+    <header className="h-12 bg-replit-surface/65 backdrop-blur-xl border-b border-replit-border/70 flex items-center justify-between px-4 shrink-0">
       {/* Left: Brand */}
       <div className="flex items-center gap-3 min-w-0">
-        <div className="w-7 h-7 bg-replit-accent rounded-lg flex items-center justify-center shadow-sm">
-          <span className="text-white font-bold text-sm">AI</span>
+        <div className="relative w-7 h-7 rounded-lg flex items-center justify-center shadow-sm bg-gradient-to-br from-sky-500 to-blue-600">
+          <Brain className="w-4 h-4 text-white" />
+          <div className="absolute inset-0 blur-xl opacity-30 bg-replit-accent" />
         </div>
         <div className="min-w-0">
-          <div className="text-replit-text font-semibold text-sm leading-tight truncate">AutoAI Builder</div>
-          <div className="text-[11px] text-replit-textMuted leading-tight truncate">Frontend-first training simulator</div>
+          <div className="text-replit-text font-semibold text-sm leading-tight truncate">AIAI Workspace</div>
+          <div className="text-[11px] text-replit-textMuted leading-tight truncate">Build • Train • Iterate</div>
         </div>
       </div>
 

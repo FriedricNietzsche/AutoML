@@ -51,9 +51,9 @@ export default function PreviewPane({
   };
 
   return (
-    <div className="h-full flex flex-col bg-replit-bg">
+    <div className="h-full flex flex-col bg-replit-bg/30 backdrop-blur-xl">
       {/* Browser-like Controls */}
-      <div className="h-10 bg-replit-surface border-b border-replit-border flex items-center px-3 gap-2 shrink-0">
+      <div className="h-10 bg-replit-surface/60 backdrop-blur border-b border-replit-border/70 flex items-center px-3 gap-2 shrink-0">
         <div className="flex items-center gap-1">
           <button className="p-1.5 hover:bg-replit-surfaceHover rounded transition-colors" disabled>
             <ArrowLeft className="w-4 h-4 text-replit-textMuted" />
@@ -69,7 +69,7 @@ export default function PreviewPane({
           </button>
         </div>
 
-        <div className="flex-1 flex items-center gap-2 px-3 py-1.5 bg-replit-bg rounded border border-replit-border mx-2">
+        <div className="flex-1 flex items-center gap-2 px-3 py-1.5 bg-replit-bg/40 backdrop-blur rounded border border-replit-border/70 mx-2">
           <span className="text-xs text-replit-textMuted font-mono truncate flex-1">
              {viewState === 'processing' ? 'https://cluster.ai-builder.dev/jobs/run_8392' : 
               viewState === 'docs' ? 'https://api.ai-builder.dev/v1/docs' : 

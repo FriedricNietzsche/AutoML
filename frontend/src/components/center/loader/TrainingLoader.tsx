@@ -1345,19 +1345,20 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
         {/* Bottom: Fixed linked list nodes */}
         <div className="shrink-0 border-t border-replit-border bg-replit-surface">
           <div className="px-4 py-4">
-            <div className="flex items-center justify-center gap-0">
-              {fixedNodes.map((node, idx) => {
-                const isActive = idx + 1 === currentStage && isStageRunning;
-                const isDone = idx + 1 < currentStage;
-                const nodeBg = isDone
-                  ? 'bg-replit-success/80 text-white border-replit-success/80'
-                  : isActive
-                    ? 'bg-replit-accent/90 text-white border-replit-accent/90'
-                    : 'bg-replit-surface/35 text-replit-textMuted border-replit-border/60';
+            <div className="flex flex-col items-center gap-2">
+              {/* Circles row with connecting lines */}
+              <div className="flex items-center justify-center">
+                {fixedNodes.map((node, idx) => {
+                  const isActive = idx + 1 === currentStage && isStageRunning;
+                  const isDone = idx + 1 < currentStage;
+                  const nodeBg = isDone
+                    ? 'bg-replit-success/80 text-white border-replit-success/80'
+                    : isActive
+                      ? 'bg-replit-accent/90 text-white border-replit-accent/90'
+                      : 'bg-replit-surface/35 text-replit-textMuted border-replit-border/60';
 
-                return (
-                  <div key={node.id} className="flex items-center">
-                    <div className="flex flex-col items-center gap-1">
+                  return (
+                    <div key={node.id} className="flex items-center">
                       <div
                         className={clsx(
                           'relative w-10 h-10 rounded-full border-2 flex items-center justify-center text-sm font-semibold shrink-0 transition-all',
@@ -1375,30 +1376,34 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
                           />
                         ) : null}
                       </div>
-                      <div className={clsx('text-xs font-medium', isActive ? 'text-replit-text' : 'text-replit-textMuted')}>
+                      {idx < fixedNodes.length - 1 && (
+                        <div 
+                          className={clsx(
+                            'h-1 w-16 -mx-px transition-all duration-500',
+                            isDone ? 'bg-replit-success/80' : 'bg-replit-border/60'
+                          )}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              {/* Labels row */}
+              <div className="flex items-center justify-center">
+                {fixedNodes.map((node, idx) => {
+                  const isActive = idx + 1 === currentStage && isStageRunning;
+                  return (
+                    <div key={node.id} className="flex items-center">
+                      <div className={clsx('text-xs font-medium w-10 text-center', isActive ? 'text-replit-text' : 'text-replit-textMuted')}>
                         {node.label}
                       </div>
+                      {idx < fixedNodes.length - 1 && (
+                        <div className="w-16 -mx-px" />
+                      )}
                     </div>
-                    {idx < fixedNodes.length - 1 && (
-                      <div className="flex items-center">
-                        <div 
-                          className={clsx(
-                            'h-0.5 w-12 transition-all',
-                            isDone ? 'bg-replit-success/60' : 'bg-replit-border/60'
-                          )}
-                        />
-                        <div 
-                          className={clsx(
-                            'w-0 h-0 border-t-4 border-b-4 border-l-6 transition-all',
-                            'border-t-transparent border-b-transparent',
-                            isDone ? 'border-l-replit-success/60' : 'border-l-replit-border/60'
-                          )}
-                        />
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
           </div>
         </div>
