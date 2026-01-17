@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { BackendEvent, StepId } from '../mock/backendEventTypes';
+import type { MockWSEnvelope } from '../mock/backendEventTypes';
+import type { StageID } from '../lib/contract';
 import { createMockAutoMLStream, type MockStreamOptions } from '../mock/mockBackendStream';
 
 export interface BackendDriverState {
-  currentStep: StepId;
+  currentStage: StageID;
   logs: string[];
   artifacts: Record<string, string>;
   leaderboard: Array<{ modelName: string; metric: number }>;
@@ -15,86 +16,94 @@ export interface BackendDriverState {
 }
 
 export const initialBackendDriverState: BackendDriverState = {
-  currentStep: 'S0',
+  currentStage: 'PARSE_INTENT',
   logs: [],
   artifacts: {},
   leaderboard: [],
 };
 
-export function onBackendEvent(state: BackendDriverState, event: BackendEvent): BackendDriverState {
-  switch (event.type) {
-    case 'STEP_STATUS':
-      return { ...state, currentStep: event.step };
-    case 'LOG_LINE':
-      return { ...state, logs: [...state.logs, event.message] };
-    case 'ARTIFACT_WRITTEN':
-      return { ...state, artifacts: { ...state.artifacts, [event.path]: event.content } };
-    case 'LEADERBOARD_UPDATED':
-      return {
-        ...state,
-        leaderboard: event.entries.map((entry) => ({
-          modelName: entry.model,
-          metric: entry.metricValue,
-        })),
-      };
-    case 'PIPELINE_GRAPH':
-      return { ...state, pipelineGraph: { nodes: event.nodes, edges: event.edges } };
-    case 'PROFILE_SUMMARY':
-      return { ...state, profileSummary: event };
-    case 'FEATURE_SUMMARY':
-      return { ...state, featureSummary: { totalFeatures: event.totalFeatures, topFeatures: event.topFeatures } };
-    case 'REPORT_READY':
-      return { ...state, reportReady: true };
-    case 'EXPORT_READY':
-      return { ...state, exportReady: true };
-    default:
-      return state;
+export function onBackendEvent(state: BackendDriverState, event: MockWSEnvelope): BackendDriverState {
+  const name = event.event?.name;
+  const payload = event.event?.payload as Record<string, unknown> | undefined;
+
+  if (name === 'STAGE_STATUS') {
+    const stageId = payload?.stage_id as StageID | undefined;
+    if (stageId) return { ...state, currentStage: stageId };
   }
+  if (name === 'LOG_LINE') {
+    const text = payload?.text as string | undefined;
+    if (text) return { ...state, logs: [...state.logs, text] };
+  }
+  if (name === 'ARTIFACT_ADDED') {
+    const artifact = payload?.artifact as { meta?: Record<string, unknown> } | undefined;
+    const meta = artifact?.meta;
+    const filePath = meta?.file_path as string | undefined;
+    const content = meta?.content as string | undefined;
+    if (filePath && typeof content === 'string') {
+      return { ...state, artifacts: { ...state.artifacts, [filePath]: content } };
+    }
+  }
+  if (name === 'LEADERBOARD_UPDATED') {
+    const rows = (payload?.rows as Array<{ model: string; metric: number }>) ?? [];
+    return {
+      ...state,
+      leaderboard: rows.map((row) => ({ modelName: row.model, metric: row.metric })),
+    };
+  }
+  if (name === 'REPORT_READY') return { ...state, reportReady: true };
+  if (name === 'EXPORT_READY') return { ...state, exportReady: true };
+
+  return state;
 }
 
 export function useMockBackend(options?: MockStreamOptions) {
-  const [events, setEvents] = useState<BackendEvent[]>([]);
-  const [currentStep, setCurrentStep] = useState<StepId>('S0');
+  const [events, setEvents] = useState<MockWSEnvelope[]>([]);
+  const [currentStage, setCurrentStage] = useState<StageID>('PARSE_INTENT');
   const [isPaused, setIsPaused] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
 
   const apiRef = useRef<{
-    confirmStep: (_stepId: StepId) => void;
-    selectPlan: (_stepId: StepId, _planId: string) => void;
+    confirmStep: (_stepId: StageID) => void;
+    selectPlan: (_stepId: StageID, _planId: string) => void;
     pause: () => void;
     resume: () => void;
     stop: () => void;
   } | null>(null);
   const runIdRef = useRef(0);
 
-  const start = useCallback((override?: MockStreamOptions) => {
-    if (isRunning) return;
-    const stream = createMockAutoMLStream({ ...options, ...override });
-    apiRef.current = {
-      confirmStep: () => undefined,
-      selectPlan: () => undefined,
-      pause: () => undefined,
-      resume: () => undefined,
-      stop: () => undefined,
-    };
-    setIsPaused(false);
-    setIsRunning(true);
-    setEvents([]);
-    runIdRef.current += 1;
-    const runId = runIdRef.current;
+  const start = useCallback(
+    (override?: MockStreamOptions) => {
+      if (isRunning) return;
+      const stream = createMockAutoMLStream({ ...options, ...override });
+      apiRef.current = {
+        confirmStep: () => undefined,
+        selectPlan: () => undefined,
+        pause: () => undefined,
+        resume: () => undefined,
+        stop: () => undefined,
+      };
+      setIsPaused(false);
+      setIsRunning(true);
+      setEvents([]);
+      runIdRef.current += 1;
+      const runId = runIdRef.current;
 
-    (async () => {
-      try {
-        for await (const event of stream) {
-          if (runIdRef.current !== runId) return;
-          setEvents((prev) => [...prev, event]);
-          if (event.type === 'STEP_STATUS') setCurrentStep(event.step as StepId);
+      (async () => {
+        try {
+          for await (const event of stream) {
+            if (runIdRef.current !== runId) return;
+            setEvents((prev) => [...prev, event]);
+            const payload = event.event?.payload as Record<string, unknown> | undefined;
+            const stageId = payload?.stage_id as StageID | undefined;
+            if (event.event?.name === 'STAGE_STATUS' && stageId) setCurrentStage(stageId);
+          }
+        } finally {
+          if (runIdRef.current === runId) setIsRunning(false);
         }
-      } finally {
-        if (runIdRef.current === runId) setIsRunning(false);
-      }
-    })();
-  }, [isRunning, options]);
+      })();
+    },
+    [isRunning, options]
+  );
 
   const stop = useCallback(() => {
     apiRef.current?.stop();
@@ -102,11 +111,11 @@ export function useMockBackend(options?: MockStreamOptions) {
     setIsRunning(false);
   }, []);
 
-  const confirmStep = useCallback((stepId: StepId) => {
+  const confirmStep = useCallback((stepId: StageID) => {
     apiRef.current?.confirmStep(stepId);
   }, []);
 
-  const selectPlan = useCallback((stepId: StepId, planId: string) => {
+  const selectPlan = useCallback((stepId: StageID, planId: string) => {
     apiRef.current?.selectPlan(stepId, planId);
   }, []);
 
@@ -130,7 +139,7 @@ export function useMockBackend(options?: MockStreamOptions) {
   return {
     events,
     lastEvent: events[events.length - 1],
-    currentStep,
+    currentStage,
     isPaused,
     isRunning,
     start,
