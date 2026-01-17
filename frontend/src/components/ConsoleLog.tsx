@@ -1,6 +1,6 @@
 import React from 'react';
 
-const ConsoleLog: React.FC<{ logs: string[] }> = ({ logs }) => {
+const ConsoleLog: React.FC<{ projectId: string; logs?: string[] }> = ({ projectId, logs = [] }) => {
     return (
         <div className="console-log">
             <h2 className="text-lg font-bold">Console Log</h2>

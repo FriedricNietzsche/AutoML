@@ -1,6 +1,10 @@
 import React from 'react';
 
-const TrainingDashboard: React.FC = () => {
+interface TrainingDashboardProps {
+    projectId: string;
+}
+
+const TrainingDashboard: React.FC<TrainingDashboardProps> = ({ projectId }) => {
     return (
         <div className="training-dashboard">
             <h2 className="text-xl font-bold">Training Dashboard</h2>

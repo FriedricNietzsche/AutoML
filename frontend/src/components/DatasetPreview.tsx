@@ -1,14 +1,23 @@
 import React from 'react';
 
 interface DatasetPreviewProps {
-    dataset: {
+    projectId: string;
+    dataset?: {
         name: string;
         description: string;
         sampleData: Array<{ [key: string]: any }>;
     };
 }
 
-const DatasetPreview: React.FC<DatasetPreviewProps> = ({ dataset }) => {
+const DatasetPreview: React.FC<DatasetPreviewProps> = ({ projectId, dataset }) => {
+    if (!dataset) {
+        return (
+            <div className="p-4 border rounded shadow">
+                <p className="text-gray-600">No dataset available for project {projectId}</p>
+            </div>
+        );
+    }
+
     return (
         <div className="p-4 border rounded shadow">
             <h2 className="text-xl font-bold">{dataset.name}</h2>

@@ -1,6 +1,10 @@
 import React from 'react';
 
-const FileExplorer: React.FC = () => {
+interface FileExplorerProps {
+    projectId: string;
+}
+
+const FileExplorer: React.FC<FileExplorerProps> = ({ projectId }) => {
     return (
         <div className="file-explorer">
             <h2 className="text-lg font-semibold">File Explorer</h2>

@@ -1,5 +1,6 @@
-import React from 'react';
-import { useRouter } from 'next/router';
+'use client';
+
+import React, { useState } from 'react';
 import ChatPanel from '@/components/ChatPanel';
 import StageTimeline from '@/components/StageTimeline';
 import ConfirmBar from '@/components/ConfirmBar';
@@ -10,16 +11,31 @@ import FileExplorer from '@/components/FileExplorer';
 import ArtifactsPanel from '@/components/ArtifactsPanel';
 import ConsoleLog from '@/components/ConsoleLog';
 
-const ProjectPage = () => {
-    const router = useRouter();
-    const { projectId } = router.query;
+interface ProjectPageProps {
+    params: {
+        projectId: string;
+    };
+}
+
+const ProjectPage = ({ params }: ProjectPageProps) => {
+    const { projectId } = params;
+    const [isWaitingForConfirmation, setIsWaitingForConfirmation] = useState(false);
+
+    const handleConfirm = () => {
+        // Handle confirmation logic here
+        console.log('Confirmed');
+        setIsWaitingForConfirmation(false);
+    };
 
     return (
         <div className="flex h-screen">
             <div className="w-1/4 p-4 border-r">
                 <ChatPanel />
                 <StageTimeline projectId={projectId} />
-                <ConfirmBar />
+                <ConfirmBar 
+                    isWaitingForConfirmation={isWaitingForConfirmation}
+                    onConfirm={handleConfirm}
+                />
             </div>
             <div className="w-1/2 p-4 border-r">
                 <DatasetPreview projectId={projectId} />

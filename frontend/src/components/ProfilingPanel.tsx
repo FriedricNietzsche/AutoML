@@ -1,6 +1,6 @@
 import React from 'react';
 
-const ProfilingPanel: React.FC<{ profilingData: any }> = ({ profilingData }) => {
+const ProfilingPanel: React.FC<{ projectId: string; profilingData?: any }> = ({ projectId, profilingData }) => {
     return (
         <div className="profiling-panel">
             <h2 className="text-xl font-bold">Data Profiling</h2>
@@ -10,7 +10,7 @@ const ProfilingPanel: React.FC<{ profilingData: any }> = ({ profilingData }) => 
                     <ul>
                         {Object.entries(profilingData.summary).map(([key, value]) => (
                             <li key={key}>
-                                <strong>{key}:</strong> {value}
+                                <strong>{key}:</strong> {String(value)}
                             </li>
                         ))}
                     </ul>
@@ -18,7 +18,7 @@ const ProfilingPanel: React.FC<{ profilingData: any }> = ({ profilingData }) => 
                     <ul>
                         {Object.entries(profilingData.dataTypes).map(([column, type]) => (
                             <li key={column}>
-                                <strong>{column}:</strong> {type}
+                                <strong>{column}:</strong> {String(type)}
                             </li>
                         ))}
                     </ul>

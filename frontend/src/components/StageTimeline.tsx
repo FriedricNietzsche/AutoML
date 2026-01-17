@@ -11,7 +11,11 @@ const stages = [
     { id: 'EXPORT', label: 'Export', status: 'pending' },
 ];
 
-const StageTimeline: React.FC = () => {
+interface StageTimelineProps {
+    projectId: string;
+}
+
+const StageTimeline: React.FC<StageTimelineProps> = ({ projectId }) => {
     return (
         <div className="flex flex-col">
             <h2 className="text-lg font-bold mb-2">Stage Timeline</h2>
