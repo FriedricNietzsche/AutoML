@@ -1,240 +1,195 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { motion, useReducedMotion } from 'framer-motion';
-import { Sparkles, ArrowRight, Moon, Sun } from 'lucide-react';
-import { createBuildSession, isValidKaggleDatasetLink, setCurrentSession } from '../lib/buildSession';
+import { useState, useMemo, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { ArrowRight, Plus, Moon, Sun } from 'lucide-react';
+
+import {
+  createBuildSession,
+  isValidKaggleDatasetLink,
+  setCurrentSession,
+} from '../lib/buildSession';
 import { useRouter } from '../router/router';
 import { useTheme } from '../lib/theme';
 import MatrixScreenLoader from '../components/MatrixScreenLoader';
 
-function MatrixMiniLoader({ active }: { active: boolean }) {
-  const reduceMotion = useReducedMotion();
-  if (!active) return null;
-
-  return (
-    <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2">
-      <div
-        className={
-          reduceMotion
-            ? 'grid grid-cols-3 gap-0.5 opacity-50'
-            : 'grid grid-cols-3 gap-0.5 opacity-70'
-        }
-        aria-hidden
-      >
-        {Array.from({ length: 9 }).map((_, i) => (
-          <div
-            key={i}
-            className={
-              reduceMotion
-                ? 'h-1.5 w-1.5 rounded-[2px] bg-replit-textMuted/40'
-                : 'h-1.5 w-1.5 rounded-[2px] bg-replit-textMuted/40 animate-[matrixPulse_900ms_ease-in-out_infinite]'
-            }
-            style={!reduceMotion ? { animationDelay: `${i * 80}ms` } : undefined}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function useTypingValidation(delayMs: number) {
-  const [isValidating, setIsValidating] = useState(false);
-  const timerRef = useRef<number | null>(null);
-
-  const trigger = () => {
-    if (timerRef.current) window.clearTimeout(timerRef.current);
-    setIsValidating(true);
-    timerRef.current = window.setTimeout(() => setIsValidating(false), delayMs);
-  };
-
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) window.clearTimeout(timerRef.current);
-    };
-  }, []);
-
-  return { isValidating, trigger };
-}
-
 export default function HomePage() {
   const { navigate } = useRouter();
   const { toggleTheme, theme } = useTheme();
-  const reduceMotion = useReducedMotion();
 
-  const [modelName, setModelName] = useState('');
   const [goalPrompt, setGoalPrompt] = useState('');
   const [kaggleLink, setKaggleLink] = useState('');
+  const [showDatasetMenu, setShowDatasetMenu] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
+  const [isBarFocused, setIsBarFocused] = useState(false);
 
-  const nameValidation = useTypingValidation(420);
-  const promptValidation = useTypingValidation(420);
-  const kaggleValidation = useTypingValidation(420);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  const kaggleOk = useMemo(() => {
-    if (!kaggleLink.trim()) return false;
-    return isValidKaggleDatasetLink(kaggleLink);
-  }, [kaggleLink]);
+  const kaggleOk = useMemo(
+    () => !kaggleLink || isValidKaggleDatasetLink(kaggleLink),
+    [kaggleLink]
+  );
 
-  const kaggleHint = useMemo(() => {
-    if (!kaggleLink.trim()) return 'Auto dataset discovery will be used.';
-    if (!kaggleOk) return 'Auto dataset discovery will be used.';
-    return 'Dataset link looks valid.';
-  }, [kaggleLink, kaggleOk]);
+  const canStart = goalPrompt.trim().length > 0;
 
-  const onStartBuild = () => {
+  const idleGlow =
+    '0 0 0 1px rgba(var(--replit-accent-rgb), 0.18), 0 0 22px rgba(var(--replit-accent-rgb), 0.16), 0 0 80px rgba(var(--replit-accent-rgb), 0.06)';
+  const idleGlowHover =
+    '0 0 0 1px rgba(var(--replit-accent-rgb), 0.32), 0 0 34px rgba(var(--replit-accent-rgb), 0.26), 0 0 110px rgba(var(--replit-accent-rgb), 0.12)';
+  const selectedGlow =
+    '0 0 0 2px rgba(var(--replit-accent-rgb), 0.62), 0 0 70px rgba(var(--replit-accent-rgb), 0.52), 0 0 160px rgba(var(--replit-accent-rgb), 0.22)';
+  const selectedGlowHover =
+    '0 0 0 2px rgba(var(--replit-accent-rgb), 0.72), 0 0 90px rgba(var(--replit-accent-rgb), 0.64), 0 0 190px rgba(var(--replit-accent-rgb), 0.28)';
+
+  const onStart = () => {
+    if (!canStart) return;
+
     setIsStarting(true);
-    const session = createBuildSession({ modelName, goalPrompt, kaggleLink });
+    const session = createBuildSession({
+      modelName: '',
+      goalPrompt,
+      kaggleLink,
+    });
+
     setCurrentSession(session);
     navigate('/workspace');
   };
 
-  const canStart = goalPrompt.trim().length > 0;
-
   return (
     <div className="min-h-screen bg-replit-bg text-replit-text relative overflow-hidden">
-      {isStarting ? <MatrixScreenLoader label="Starting build…" /> : null}
-      {/* Background */}
-      <div className="absolute inset-0 -z-10">
-        <div className="home-bg-static" />
-      </div>
+      {isStarting && <MatrixScreenLoader label="Starting build…" />}
 
-      <div className="max-w-5xl mx-auto px-6 py-14">
-        {/* Header */}
-        <div className="flex items-start justify-between gap-6">
-          <div>
-            <div className="inline-flex items-center gap-2 rounded-full border border-replit-border bg-replit-surface px-3 py-1 text-xs text-replit-textMuted">
-              <Sparkles className="w-3.5 h-3.5" />
-              AutoAI Builder
-            </div>
-            <h1 className="mt-4 text-4xl md:text-5xl font-semibold tracking-tight">
-              Build an AI model UI-first.
-            </h1>
-            <p className="mt-3 text-replit-textMuted max-w-xl">
-              No backend required. Start a build session and watch the training simulator run.
-            </p>
-          </div>
-
-          <button
-            onClick={toggleTheme}
-            className="rounded-lg border border-replit-border bg-replit-surface px-3 py-2 text-xs text-replit-text hover:bg-replit-surfaceHover transition-colors"
-            aria-label="Toggle theme"
-            title={theme === 'midnight' ? 'Switch to light mode' : 'Switch to dark mode'}
-          >
-            {theme === 'midnight' ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
-          </button>
+      {/* Logo */}
+      <motion.div
+        initial={{ opacity: 0, y: -6 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.35, ease: 'easeOut' }}
+        className="absolute top-6 left-6 flex items-center gap-2"
+      >
+        <div className="text-lg font-semibold tracking-tight">
+          <span className="text-replit-text">AI</span>
+          <span className="text-replit-accent">AI</span>
         </div>
+        <div className="h-2 w-2 rounded-full bg-replit-accent shadow-[0_0_12px_rgba(15,98,254,0.8)]" />
+      </motion.div>
 
-        {/* Form Card */}
-        <motion.div
-          initial={reduceMotion ? false : { opacity: 0, y: 10 }}
-          animate={reduceMotion ? undefined : { opacity: 1, y: 0 }}
-          transition={{ duration: 0.35, ease: 'easeOut' }}
-          style={{ willChange: 'transform, opacity' }}
-          className="mt-10 mx-auto max-w-2xl"
+      {/* Theme toggle */}
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        className="absolute top-6 right-6"
+      >
+        <button
+          onClick={toggleTheme}
+          className="rounded-lg border border-replit-border bg-replit-surface p-2 hover:bg-replit-surfaceHover transition"
         >
-          <div className="rounded-2xl border border-replit-border bg-replit-surface shadow-sm">
-            <div className="p-6 md:p-7 border-b border-replit-border/40">
-              <h2 className="text-lg font-semibold">Start a Build Session</h2>
-              <p className="mt-1 text-sm text-replit-textMuted">
-                Tell AutoAI what to build. We’ll simulate the pipeline and generate artifacts into the VFS.
-              </p>
-            </div>
+          {theme === 'midnight' ? <Moon size={16} /> : <Sun size={16} />}
+        </button>
+      </motion.div>
 
-            <div className="p-6 md:p-7 space-y-5">
-              {/* Model Name */}
-              <div>
-                <label className="text-sm font-medium">Model Name</label>
-                <div className="mt-2 relative">
-                  <input
-                    value={modelName}
-                    onChange={(e) => {
-                      setModelName(e.target.value);
-                      nameValidation.trigger();
-                    }}
-                    placeholder="e.g. Review Sentiment Classifier"
-                    className="w-full rounded-xl border border-replit-border bg-replit-bg px-4 py-3 pr-10 text-sm outline-none focus:border-replit-accent/80 focus:ring-2 focus:ring-replit-accent/20 transition"
-                  />
-                  <MatrixMiniLoader active={nameValidation.isValidating} />
-                </div>
-              </div>
+      {/* Center content */}
+      <motion.div
+        initial={{ opacity: 0, y: 14 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, ease: 'easeOut' }}
+        className="flex min-h-screen flex-col items-center justify-center px-6"
+      >
+        <h1 className="text-2xl md:text-3xl font-medium mb-6 text-center">
+          Hey, Mohamed. Ready to dive in?
+        </h1>
 
-              {/* Goal Prompt */}
-              <div>
-                <label className="text-sm font-medium">What should the model do?</label>
-                <div className="mt-2 relative">
-                  <textarea
-                    value={goalPrompt}
-                    onChange={(e) => {
-                      setGoalPrompt(e.target.value);
-                      promptValidation.trigger();
-                    }}
-                    rows={4}
-                    placeholder="Describe the task and expected inputs/outputs…"
-                    className="w-full resize-none rounded-xl border border-replit-border bg-replit-bg px-4 py-3 pr-10 text-sm outline-none focus:border-replit-accent/80 focus:ring-2 focus:ring-replit-accent/20 transition"
-                  />
-                  <MatrixMiniLoader active={promptValidation.isValidating} />
-                </div>
-                {!goalPrompt.trim() && (
-                  <div className="mt-2 text-xs text-replit-textMuted">
-                    Required. This drives the simulated API schema and demo inference.
-                  </div>
+        {/* Prompt container */}
+        <motion.div layout className="relative w-full max-w-2xl">
+          <motion.div
+            style={{
+              boxShadow: isBarFocused ? selectedGlow : idleGlow,
+            }}
+            whileHover={{
+              boxShadow:
+                isBarFocused
+                  ? selectedGlowHover
+                  : idleGlowHover,
+            }}
+            transition={{
+              duration: 0.16,
+              ease: 'easeOut',
+            }}
+            onFocusCapture={() => setIsBarFocused(true)}
+            onBlurCapture={(e) => {
+              const next = e.relatedTarget as Node | null;
+              if (!next || !e.currentTarget.contains(next)) {
+                setIsBarFocused(false);
+              }
+            }}
+            className="flex items-center rounded-2xl bg-replit-surface border border-replit-border px-3 py-2 shadow-sm"
+          >
+            {/* + menu */}
+            <div className="relative">
+              <motion.button
+                whileTap={{ scale: 0.9 }}
+                onClick={() => setShowDatasetMenu(v => !v)}
+                className="p-2 rounded-lg hover:bg-replit-surfaceHover transition"
+              >
+                <Plus size={18} />
+              </motion.button>
+
+              <AnimatePresence>
+                {showDatasetMenu && (
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.96, y: -6 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.96, y: -6 }}
+                    transition={{ duration: 0.18, ease: 'easeOut' }}
+                    className="absolute left-0 top-11 w-72 rounded-xl border border-replit-border bg-replit-surface p-3 z-20 backdrop-blur"
+                  >
+                    <label className="text-xs font-medium mb-1 block">
+                      Kaggle dataset link
+                    </label>
+                    <input
+                      value={kaggleLink}
+                      onChange={(e) => setKaggleLink(e.target.value)}
+                      placeholder="https://kaggle.com/datasets/..."
+                      className={
+                        'w-full rounded-lg bg-replit-bg border px-3 py-2 text-sm outline-none transition ' +
+                        (kaggleOk
+                          ? 'border-replit-border focus:ring-2 focus:ring-replit-accent/30'
+                          : 'border-yellow-400 focus:ring-2 focus:ring-yellow-400/30')
+                      }
+                    />
+                    <p className="mt-1 text-xs text-replit-textMuted">
+                      Leave blank to auto-select a dataset
+                    </p>
+                  </motion.div>
                 )}
-              </div>
-
-              {/* Kaggle */}
-              <div>
-                <label className="text-sm font-medium">Kaggle dataset link (optional)</label>
-                <div className="mt-2 relative">
-                  <input
-                    value={kaggleLink}
-                    onChange={(e) => {
-                      setKaggleLink(e.target.value);
-                      kaggleValidation.trigger();
-                    }}
-                    placeholder="https://kaggle.com/datasets/..."
-                    className={
-                      'w-full rounded-xl border bg-replit-bg px-4 py-3 pr-10 text-sm outline-none transition ' +
-                      (kaggleLink.trim() && !kaggleOk
-                        ? 'border-yellow-400/60 focus:border-yellow-400 focus:ring-2 focus:ring-yellow-400/20'
-                        : 'border-replit-border focus:border-replit-accent/80 focus:ring-2 focus:ring-replit-accent/20')
-                    }
-                  />
-                  <MatrixMiniLoader active={kaggleValidation.isValidating} />
-                </div>
-                <div className="mt-2 text-xs text-replit-textMuted">
-                  Paste a Kaggle dataset link. Leave blank and AutoAI will choose one.
-                </div>
-                <div className={
-                  'mt-1 text-xs ' +
-                  (kaggleLink.trim() && !kaggleOk ? 'text-yellow-300' : kaggleOk ? 'text-green-300' : 'text-replit-textMuted')
-                }>
-                  {kaggleHint}
-                </div>
-              </div>
-
-              {/* CTA */}
-              <div className="pt-2 flex items-center justify-between gap-4">
-                <div className="text-xs text-replit-textMuted">
-                  Build starts automatically in the workspace.
-                </div>
-
-                <button
-                  onClick={onStartBuild}
-                  disabled={!canStart}
-                  className={
-                    'inline-flex items-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold transition ' +
-                    (canStart
-                      ? 'bg-replit-accent hover:bg-replit-accentHover text-white shadow-[0_10px_30px_rgba(15,98,254,0.35)]'
-                      : 'bg-replit-surfaceHover text-replit-textMuted border border-replit-border/60 cursor-not-allowed')
-                  }
-                >
-                  Start Build
-                  <ArrowRight className="w-4 h-4" />
-                </button>
-              </div>
+              </AnimatePresence>
             </div>
-          </div>
+
+            {/* Prompt input */}
+            <input
+              ref={inputRef}
+              value={goalPrompt}
+              onChange={(e) => setGoalPrompt(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && onStart()}
+              placeholder="Ask anything"
+              className="flex-1 bg-transparent px-3 py-2 text-sm outline-none"
+            />
+
+            {/* Send button */}
+            <motion.button
+              whileHover={canStart ? { scale: 1.05 } : undefined}
+              whileTap={canStart ? { scale: 0.95 } : undefined}
+              onClick={onStart}
+              disabled={!canStart}
+              className={
+                'p-2 rounded-lg transition ' +
+                (canStart
+                  ? 'bg-replit-accent text-white'
+                  : 'text-replit-textMuted')
+              }
+            >
+              <ArrowRight size={18} />
+            </motion.button>
+          </motion.div>
         </motion.div>
-      </div>
+      </motion.div>
     </div>
   );
 }
