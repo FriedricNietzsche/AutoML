@@ -1,0 +1,101 @@
+import { parseEventMessage, EventMessage, EventType } from "./types";
+
+type ConnectionStatus = "idle" | "connecting" | "open" | "closed" | "error";
+
+export type WSClientOptions = {
+  projectId: string;
+  baseUrl?: string; // e.g. ws://localhost:8000
+  retryDelaysMs?: number[];
+  onStatusChange?: (status: ConnectionStatus) => void;
+  onEvent?: (event: EventMessage) => void;
+  onError?: (err: unknown) => void;
+};
+
+export type WSClient = {
+  send: (data: unknown) => void;
+  close: () => void;
+};
+
+const defaultRetry = [500, 1000, 2000, 5000];
+
+const makeUrl = (baseUrl: string, projectId: string) => {
+  const trimmed = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
+  return `${trimmed}/ws/projects/${projectId}`;
+};
+
+export function createWebSocketClient(opts: WSClientOptions): WSClient {
+  const {
+    projectId,
+    baseUrl,
+    retryDelaysMs = defaultRetry,
+    onStatusChange,
+    onEvent,
+    onError,
+  } = opts;
+
+  let socket: WebSocket | null = null;
+  let closed = false;
+  let attempt = 0;
+
+  const url =
+    baseUrl ??
+    (typeof window !== "undefined"
+      ? `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}`
+      : "ws://localhost:8000");
+
+  const fullUrl = makeUrl(url, projectId);
+
+  const connect = () => {
+    onStatusChange?.("connecting");
+    socket = new WebSocket(fullUrl);
+
+    socket.onopen = () => {
+      attempt = 0;
+      onStatusChange?.("open");
+    };
+
+    socket.onmessage = (event: MessageEvent<string>) => {
+      try {
+        const parsed = parseEventMessage(JSON.parse(event.data));
+        onEvent?.(parsed);
+      } catch (err) {
+        onError?.(err);
+      }
+    };
+
+    socket.onerror = (err) => {
+      onStatusChange?.("error");
+      onError?.(err);
+    };
+
+    socket.onclose = () => {
+      onStatusChange?.("closed");
+      if (!closed) {
+        const delay = retryDelaysMs[Math.min(attempt, retryDelaysMs.length - 1)];
+        attempt += 1;
+        setTimeout(connect, delay);
+      }
+    };
+  };
+
+  connect();
+
+  const send = (data: unknown) => {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify(data));
+    }
+  };
+
+  const close = () => {
+    closed = true;
+    if (socket && socket.readyState !== WebSocket.CLOSED) {
+      socket.close();
+    }
+  };
+
+  return { send, close };
+}
+
+export function isHello(event: EventMessage) {
+  return event.event.name === EventType.HELLO || event.type === "HELLO";
+}

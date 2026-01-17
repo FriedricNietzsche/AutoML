@@ -61,7 +61,7 @@ We have **4 members**. Tasks are assigned so work can run in parallel with clean
 
 ---
 
-## Task 1.3: Event Protocol & Shared Types
+## Task 1.3: Event Protocol & Shared Types - COMPLETED
 **Owner:** Member B (with Member C)  
 **Goal:** Define shared contract types on both sides.
 - Backend: `backend/app/events/schema.py` defines:
