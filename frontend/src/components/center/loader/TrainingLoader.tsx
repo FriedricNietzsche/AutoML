@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { BlockMath } from 'react-katex';
 import 'katex/dist/katex.min.css';
@@ -48,62 +48,11 @@ export interface TrainingLoaderProps {
 }
 
 const DEFAULT_SEED = 1337;
-const FRAME_DURATION_MS = 5000;
-const EVAL_DURATION_MS = 9000;
-const CONFUSION_DURATION_MS = 7000;
-
-const STEP_TEMPLATES: Record<LoaderStepId, Omit<StepDef, 'id' | 'title' | 'subtitle' | 'durationMs'>> = {
-  neuralNet: {
-    equations: ['\\mathbf{h}=\\sigma(\\mathbf{W}\\mathbf{x}+\\mathbf{b})'],
-    phases: [{ kind: 'visual', visualId: 'neuralNetForward' }],
-  },
-  matrixOps: {
-    equations: ['\\mathbf{Y}=\\mathbf{X}\\mathbf{W}'],
-    matrixLabel: 'X·W',
-    matrixRows: 6,
-    matrixCols: 8,
-    phases: [{ kind: 'operation' }],
-  },
-  gradientDescent: {
-    equations: ['\\theta_{t+1}=\\theta_t-\\eta\\nabla L(\\theta_t)'],
-    phases: [{ kind: 'visual', visualId: 'gradDescent' }],
-  },
-  trainLoss: {
-    equations: ['\\mathcal{L}(\\theta)'],
-    phases: [{ kind: 'graph', graphType: 'loss' }],
-  },
-  modelMetric: {
-    equations: ['\\mathrm{metric}(\\hat{y},y)'],
-    phases: [{ kind: 'graph', graphType: 'accuracy' }],
-  },
-  embedding: {
-    equations: ['\\mathbf{z}=f(\\mathbf{x})'],
-    phases: [{ kind: 'visual', visualId: 'embeddingScatter' }],
-  },
-  evaluation: {
-    equations: ['\\mathrm{F1}=2\\frac{PR}{P+R}'],
-    phases: [{ kind: 'visual', visualId: 'evaluation' }],
-  },
-  residuals: {
-    equations: ['r = y-\\hat{y}'],
-    phases: [{ kind: 'visual', visualId: 'residuals' }],
-  },
-  confusionMatrix: {
-    equations: ['\\mathbf{C}'],
-    phases: [{ kind: 'visual', visualId: 'confusionMatrix' }],
-  },
-};
 
 const phaseTitle = (phase: StepPhase) => {
   if (phase.kind === 'operation') return 'Operation';
   if (phase.kind === 'graph') return phase.graphType === 'loss' ? 'Graph (Loss)' : 'Graph (Accuracy)';
   return `Visual (${VISUAL_LABEL[phase.visualId]})`;
-};
-
-const getPhaseKindLabel = (phase: StepPhase) => {
-  if (phase.kind === 'operation') return 'Operation';
-  if (phase.kind === 'graph') return 'Graph';
-  return 'Visual';
 };
 
 function buildLossSeries(total: number): LossPoint[] {
@@ -166,7 +115,7 @@ function MatrixGrid({
         <div className="text-xs font-mono text-replit-textMuted">
           {label}{' '}
           <span className="px-1.5 py-0.5 rounded border border-replit-border/60 bg-replit-surface/40">
-            {rows}×{cols}
+            {rows}├ù{cols}
           </span>
         </div>
         <div className="text-[11px] text-replit-textMuted">Matrix op</div>
@@ -253,7 +202,14 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
   const reducedMotionPref = useReducedMotion();
   const reducedMotion = !!reducedMotionPref;
 
-  const [activeScenario, setActiveScenario] = useState<ScenarioId>(scenarioId ?? 'A');
+  // Stage management
+  const [currentStage, setCurrentStage] = useState<number>(0); // 0 = initial, 1-5 = stages
+  const [isStageRunning, setIsStageRunning] = useState<boolean>(false);
+  const [stageCompleted, setStageCompleted] = useState<boolean>(false);
+  const [showChangeOption, setShowChangeOption] = useState<boolean>(false);
+  const [changeRequest, setChangeRequest] = useState<string>('');
+
+  const [activeScenario, setActiveScenario] = useState<ScenarioId>(scenarioId ?? 'B');
   useEffect(() => {
     if (!scenarioId) return;
     setActiveScenario(scenarioId);
@@ -262,36 +218,175 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
   const { events, metricsState } = useMockAutoMLStream({
     scenarioId: activeScenario,
     seed,
-    enabled: useMockStream,
+    enabled: useMockStream && currentStage > 0,
   });
 
-  const scenarioConfig = useMemo(() => SCENARIO_VIZ[activeScenario], [activeScenario]);
-  const steps = useMemo<StepDef[]>(() => {
-    const base = scenarioConfig.steps.filter((s) => s.enabled);
-    const confusionSize = metricsState.confusionTable?.length ?? 0;
-    const shouldSplitConfusion = scenarioConfig.showConfusionMatrix && confusionSize > 2;
+  // Load actual image pixels client-side for image data
+  const [loadedImagePixels, setLoadedImagePixels] = useState<Array<{ r: number; g: number; b: number }> | null>(null);
+  const [imageAnimStartedAt, setImageAnimStartedAt] = useState<number | null>(null);
+  const imageCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const imageOffscreenRef = useRef<HTMLCanvasElement | null>(null);
 
-    const expanded: Array<{ id: LoaderStepId; title: string; subtitle: string; enabled: boolean }> = [];
-    for (const stepDef of base) {
-      expanded.push(stepDef);
-      if (stepDef.id === 'evaluation' && shouldSplitConfusion) {
-        expanded.push({
-          id: 'confusionMatrix',
-          title: 'Confusion Matrix',
-          subtitle: 'Detailed class breakdown',
-          enabled: true,
-        });
-      }
+  useEffect(() => {
+    const isImage = metricsState.datasetPreview?.dataType === 'image';
+    const needsClientLoad = !!metricsState.datasetPreview?.imageData?.needsClientLoad;
+
+    if (!isImage || !needsClientLoad) {
+      setLoadedImagePixels(null);
+      setImageAnimStartedAt(null);
+      imageOffscreenRef.current = null;
+      return;
     }
 
-    return expanded.map((s) => ({
-      id: s.id,
-      title: s.title,
-      subtitle: s.subtitle,
-      durationMs: s.id === 'evaluation' ? EVAL_DURATION_MS : s.id === 'confusionMatrix' ? CONFUSION_DURATION_MS : FRAME_DURATION_MS,
-      ...STEP_TEMPLATES[s.id],
-    }));
-  }, [metricsState.confusionTable, scenarioConfig]);
+    // Only do DOM image extraction when Stage 2 is actually mounted.
+    if (currentStage !== 2) return;
+
+    const canvasSize = 280;
+    const gridSize = 20;
+    let cancelled = false;
+
+    // Use an offscreen canvas for sampling so we don't depend on the on-screen canvas being present.
+    const offscreen = document.createElement('canvas');
+    offscreen.width = canvasSize;
+    offscreen.height = canvasSize;
+    const sampleCtx = offscreen.getContext('2d');
+    if (!sampleCtx) return;
+
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    let retried = false;
+
+    img.onload = () => {
+      if (cancelled) return;
+
+      const scale = Math.min(canvasSize / img.width, canvasSize / img.height);
+      const scaledWidth = img.width * scale;
+      const scaledHeight = img.height * scale;
+      const x = (canvasSize - scaledWidth) / 2;
+      const y = (canvasSize - scaledHeight) / 2;
+
+      // Draw to offscreen canvas
+      sampleCtx.fillStyle = '#ffffff';
+      sampleCtx.fillRect(0, 0, canvasSize, canvasSize);
+      sampleCtx.drawImage(img, x, y, scaledWidth, scaledHeight);
+
+      // Keep a handle so we can paint it onto the on-screen canvas later.
+      imageOffscreenRef.current = offscreen;
+
+      // Also draw to on-screen canvas if present
+      const onCanvas = imageCanvasRef.current;
+      const onCtx = onCanvas?.getContext('2d');
+      if (onCtx) {
+        onCtx.clearRect(0, 0, canvasSize, canvasSize);
+        onCtx.drawImage(offscreen, 0, 0);
+      }
+
+      // Sample centers of a 20x20 grid from the 280x280 imageData
+      const imgData = sampleCtx.getImageData(0, 0, canvasSize, canvasSize);
+      const pixels: Array<{ r: number; g: number; b: number }> = [];
+      const cellSize = canvasSize / gridSize;
+
+      for (let gy = 0; gy < gridSize; gy++) {
+        for (let gx = 0; gx < gridSize; gx++) {
+          const centerX = gx * cellSize + cellSize / 2;
+          const centerY = gy * cellSize + cellSize / 2;
+          const idx = (Math.floor(centerY) * canvasSize + Math.floor(centerX)) * 4;
+          pixels.push({ r: imgData.data[idx], g: imgData.data[idx + 1], b: imgData.data[idx + 2] });
+        }
+      }
+
+      setLoadedImagePixels(pixels);
+      setImageAnimStartedAt(nowRef.current || performance.now());
+    };
+
+    img.onerror = () => {
+      if (cancelled) return;
+      if (!retried) {
+        retried = true;
+        img.src = '/src/assets/image.jpg';
+        return;
+      }
+      console.error('Failed to load image');
+    };
+
+    // Use the correct path to the image
+    img.src = new URL('../../../assets/image.jpg', import.meta.url).href;
+    return () => {
+      cancelled = true;
+    };
+  }, [currentStage, metricsState.datasetPreview?.dataType, metricsState.datasetPreview?.imageData?.needsClientLoad]);
+
+  // If the image finished loading before the on-screen canvas ref was mounted, paint it now.
+  useEffect(() => {
+    const isImage = metricsState.datasetPreview?.dataType === 'image';
+    const needsClientLoad = !!metricsState.datasetPreview?.imageData?.needsClientLoad;
+    if (currentStage !== 2 || !isImage || !needsClientLoad) return;
+    if (!loadedImagePixels || loadedImagePixels.length === 0) return;
+
+    const canvas = imageCanvasRef.current;
+    const offscreen = imageOffscreenRef.current;
+    if (!canvas || !offscreen) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(offscreen, 0, 0);
+  }, [currentStage, loadedImagePixels, metricsState.datasetPreview?.dataType, metricsState.datasetPreview?.imageData?.needsClientLoad]);
+
+  const stage1Thinking = metricsState.thinkingByStep?.S1 ?? [];
+
+  const scenarioConfig = useMemo(() => SCENARIO_VIZ[activeScenario], [activeScenario]);
+  
+  // Define one animation per stage
+  const stageDefinitions = useMemo<StepDef[]>(() => [
+    {
+      id: 'matrixOps' as LoaderStepId,
+      title: 'Loading Data',
+      subtitle: 'Reading and validating dataset',
+      durationMs: 6000,
+      phases: [{ kind: 'operation' as const }],
+    },
+    {
+      id: 'preprocessing' as LoaderStepId,
+      title: 'Preprocessing',
+      subtitle: 'Normalizing and transforming features',
+      durationMs: 6000,
+      matrixLabel: 'Data Preview',
+      matrixRows: 8,
+      matrixCols: 6,
+      phases: [{ kind: 'operation' as const }],
+    },
+    {
+      id: 'trainLoss' as LoaderStepId,
+      title: 'Training Model',
+      subtitle: 'Optimizing model parameters',
+      durationMs: 8000,
+      equations: ['\\mathcal{L}(\\theta)'],
+      phases: [{ kind: 'graph' as const, graphType: 'loss' as const }],
+    },
+    {
+      id: 'evaluation' as LoaderStepId,
+      title: 'Evaluating Performance',
+      subtitle: 'Computing metrics and validation',
+      durationMs: 7000,
+      equations: ['\\mathrm{F1}=2\\frac{PR}{P+R}'],
+      phases: [{ kind: 'visual' as const, visualId: 'evaluation' as const }],
+    },
+    {
+      id: 'embedding' as LoaderStepId,
+      title: 'Exporting Model',
+      subtitle: 'Packaging for deployment',
+      durationMs: 5000,
+      equations: ['\\mathbf{z}=f(\\mathbf{x})'],
+      phases: [{ kind: 'visual' as const, visualId: 'embeddingScatter' as const }],
+    },
+  ], []);
+
+  // Get the current stage's step definition
+  const steps = useMemo(() => {
+    if (currentStage === 0 || currentStage > 5) return stageDefinitions;
+    return [stageDefinitions[currentStage - 1]];
+  }, [currentStage, stageDefinitions]);
 
   const metricKind = scenarioConfig.metricKind;
 
@@ -328,6 +423,55 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
     stepIndexRef.current = stepIndex;
   }, [stepIndex]);
 
+  // Handle stage progression
+  const handleProceed = () => {
+    if (currentStage === 0) {
+      // Start stage 1
+      setCurrentStage(1);
+      setIsStageRunning(true);
+      setStageCompleted(false);
+      setStepIndex(0);
+      setStepStartedAt(nowRef.current || 0);
+    } else if (stageCompleted && !isStageRunning) {
+      // Move to next stage
+      const nextStage = currentStage + 1;
+      if (nextStage <= 5) {
+        setCurrentStage(nextStage);
+        setIsStageRunning(true);
+        setStageCompleted(false);
+        setShowChangeOption(false);
+        setStepIndex(0);
+        setStepStartedAt(nowRef.current || 0);
+      }
+    }
+  };
+
+  const handleMakeChanges = () => {
+    // Redirect to stage 3 with the change request
+    if (changeRequest.trim()) {
+      // TODO: Send changeRequest to the bot/backend
+      console.log('Change requested:', changeRequest);
+      appendLog(updateFileContentRef.current, `User requested changes: ${changeRequest}`);
+    }
+    setCurrentStage(3);
+    setIsStageRunning(true);
+    setStageCompleted(false);
+    setShowChangeOption(false);
+    setChangeRequest('');
+    setStepIndex(0);
+    setStepStartedAt(nowRef.current || 0);
+  };
+
+  const handleDeployment = () => {
+    // Proceed to stage 5 (deployment)
+    setCurrentStage(5);
+    setIsStageRunning(true);
+    setStageCompleted(false);
+    setShowChangeOption(false);
+    setStepIndex(0);
+    setStepStartedAt(nowRef.current || 0);
+  };
+
   const completedRef = useRef(false);
   const advanceGuardRef = useRef(-1);
   const clockInitRef = useRef(false);
@@ -361,38 +505,22 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
     if (metricKind === 'f1') return f1Full.length > 0 ? f1Full : accFull;
     return accFull;
   }, [accFull, f1Full, metricKind, rmseFull]);
-  const lastLossCountWritten = useRef(0);
-  const lastAccCountWritten = useRef(0);
-  const lastLossWriteAtRef = useRef(0);
-  const lastAccWriteAtRef = useRef(0);
+  
   const lastLossValueRef = useRef<number | null>(null);
   const lastAccValueRef = useRef<number | null>(null);
-
-  const startStep = (nextStepIndex: number, startedAtMs: number) => {
-    setStepIndex(nextStepIndex);
-    setStepStartedAt(startedAtMs);
-
-    // Reset metric reveal for metric steps.
-    setLossVisible([]);
-    setAccVisible([]);
-    lastLossCountWritten.current = 0;
-    lastAccCountWritten.current = 0;
-    lastLossWriteAtRef.current = startedAtMs;
-    lastAccWriteAtRef.current = startedAtMs;
-  };
 
   useEffect(() => {
     if (!useMockStream) return;
     completedRef.current = false;
     advanceGuardRef.current = -1;
-    startStep(0, nowRef.current || performance.now());
+    setStepIndex(0);
+    setStepStartedAt(nowRef.current || 0);
   }, [activeScenario, useMockStream]);
 
   const step = steps[Math.min(stepIndex, steps.length - 1)];
   const elapsed = Math.max(0, now - stepStartedAt);
 
   const { phaseIndex, phase, phaseProgress } = computeWeightedPhase(step.phases, elapsed, step.durationMs);
-  const stepProgress = clamp01(elapsed / Math.max(1, step.durationMs));
 
   const stepSeed = (seed ?? DEFAULT_SEED) + stepIndex * 1000 + phaseIndex * 100;
 
@@ -430,77 +558,24 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  // Failsafe watchdog per step.
-  useEffect(() => {
-    if (completedRef.current) return;
-    if (stepIndex >= steps.length) return;
-
-    const expected = stepIndex;
-    const timeoutMs = Math.max(250, step.durationMs + 400);
-
-    const id = window.setTimeout(() => {
-      if (completedRef.current) return;
-      if (stepIndexRef.current !== expected) return;
-      startStep(expected + 1, nowRef.current || performance.now());
-    }, timeoutMs);
-
-    return () => window.clearTimeout(id);
-  }, [stepIndex, step.durationMs]);
-
   // On step start: logs + progress artifact.
   useEffect(() => {
-    appendLog(updateFileContentRef.current, `${step.title} — ${step.subtitle}`);
+    if (currentStage === 0 || !isStageRunning) return;
+    appendLog(updateFileContentRef.current, `${step.title} ΓÇö ${step.subtitle}`);
     writeJson(updateFileContentRef.current, '/artifacts/progress.json', {
       step: step.id,
-      stepIndex,
+      stage: currentStage,
       startedAt: new Date().toISOString(),
     });
-  }, [step.id, step.title, step.subtitle, stepIndex]);
+  }, [currentStage, isStageRunning, step.id, step.title, step.subtitle]);
 
-  // Advance step when complete.
+  // Reset metric data when starting new stage
   useEffect(() => {
-    if (stepIndex >= steps.length) return;
-    if (stepProgress < 1) return;
-
-
-    if (step.phases.some((p) => p.kind === 'graph')) {
-      const graphPhase = step.phases.find((p) => p.kind === 'graph');
-      if (graphPhase?.graphType === 'loss' && lossVisible.length < lossFull.length) return;
-      if (graphPhase?.graphType === 'accuracy' && accVisible.length < metricFull.length) return;
+    if (isStageRunning && currentStage > 0) {
+      setLossVisible([]);
+      setAccVisible([]);
     }
-
-    if (advanceGuardRef.current === stepIndex) return;
-    advanceGuardRef.current = stepIndex;
-
-    if (stepIndex === steps.length - 1) {
-      if (completedRef.current) return;
-      completedRef.current = true;
-
-      if (!useMockStream) {
-        const model = {
-          model: 'AutoAI MockNet',
-          version: '0.2',
-          trainedAt: new Date().toISOString(),
-          metrics: {
-            loss: lastLossValueRef.current,
-            accuracy: lastAccValueRef.current,
-          },
-        };
-        writeJson(updateFileContentRef.current, '/artifacts/model.json', model);
-        writeJson(updateFileContentRef.current, '/config/model.json', model);
-        appendLog(updateFileContentRef.current, 'Build complete — artifacts written');
-      }
-
-      onComplete();
-      return;
-    }
-
-    const advance = () => {
-      startStep(stepIndex + 1, nowRef.current || performance.now());
-    };
-    if (typeof queueMicrotask === 'function') queueMicrotask(advance);
-    else Promise.resolve().then(advance);
-  }, [onComplete, stepIndex, stepProgress]);
+  }, [currentStage, isStageRunning]);
 
   // Graph phase metric reveal + artifact writes.
   useEffect(() => {
@@ -531,16 +606,6 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
     writeJson(updateFileContentRef.current, path, value);
   };
 
-  const phaseLabel = getPhaseKindLabel(phase);
-  const phaseExtra =
-    phase.kind === 'visual'
-      ? VISUAL_LABEL[phase.visualId]
-      : phase.kind === 'graph'
-        ? phase.graphType === 'accuracy'
-          ? metricKind
-          : phase.graphType
-        : '';
-
   const evaluationMetrics = useMemo(() => {
     const accuracy = metricsState.metricsSummary.accuracy;
     const f1 = metricsState.metricsSummary.f1;
@@ -556,85 +621,144 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
     return { accuracy: computedAcc, precision, recall, f1: computedF1 };
   }, [metricsState.metricsSummary, useRmse]);
 
+  const fixedNodes = [
+    { id: 1, label: 'Data Load' },
+    { id: 2, label: 'Preprocess' },
+    { id: 3, label: 'Train' },
+    { id: 4, label: 'Evaluate' },
+    { id: 5, label: 'Export' },
+  ];
+
+  // Check when stage animation is complete
+  useEffect(() => {
+    if (!isStageRunning || currentStage === 0) return;
+    
+    const stageDef = stageDefinitions[currentStage - 1];
+    if (!stageDef) return;
+    
+    const timeout = setTimeout(() => {
+      setIsStageRunning(false);
+      setStageCompleted(true);
+      if (currentStage === 4) {
+        setShowChangeOption(true);
+      } else if (currentStage === 5) {
+        // After deployment, navigate to tester page
+        setTimeout(() => {
+          onComplete();
+        }, 1500); // Give user a moment to see completion message
+      }
+    }, stageDef.durationMs);
+    
+    return () => clearTimeout(timeout);
+  }, [isStageRunning, currentStage, stageDefinitions, onComplete]);
+
+  const getStagePrompt = () => {
+    if (currentStage === 0) {
+      return {
+        title: "Ready to Build Your AI Model?",
+        subtitle: "Click 'Proceed' to start the automated machine learning pipeline. We'll guide you through data loading, preprocessing, training, evaluation, and deployment.",
+      };
+    }
+    if (isStageRunning) {
+      return {
+        title: step.title,
+        subtitle: step.subtitle,
+      };
+    }
+    if (stageCompleted) {
+      const stageMessages = [
+        { title: "Stage 1 Complete!", subtitle: "Data has been loaded and validated. Ready to proceed to preprocessing?" },
+        { title: "Stage 2 Complete!", subtitle: "Data preprocessing finished successfully. Ready to train the model?" },
+        { title: "Stage 3 Complete!", subtitle: "Model training completed. Ready to evaluate performance?" },
+        { title: "Stage 4 Complete!", subtitle: "Model evaluation finished. Review the results and decide next steps." },
+        { title: "Deployment Complete!", subtitle: "Redirecting to model tester..." },
+      ];
+      return stageMessages[currentStage - 1] || stageMessages[0];
+    }
+    return { title: "", subtitle: "" };
+  };
+
+  const prompt = getStagePrompt();
+
   return (
     <div className="h-full w-full">
       <div className="h-full w-full flex flex-col overflow-hidden">
-        {/* Top: step overview grid (no horizontal scroller) */}
-        <div className="shrink-0 border-b border-replit-border bg-replit-surface">
-          <div className="px-4 pt-4 pb-3">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <div className="text-lg font-semibold text-replit-text">{step.title}</div>
-                <div className="text-sm text-replit-textMuted">{step.subtitle}</div>
-              </div>
-              <div className="flex items-center gap-4">
-                <div className="text-xs font-mono text-replit-textMuted whitespace-nowrap">
-                  Step {stepIndex + 1}/{steps.length} · {phaseLabel}
-                  {phaseExtra ? `: ${phaseExtra}` : ''} · ({phaseIndex + 1}/{step.phases.length})
-                </div>
-                <label className="text-xs text-replit-textMuted flex items-center gap-2">
-                  Scenario
-                  <select
-                    value={activeScenario}
-                    onChange={(e) => setActiveScenario(e.target.value as ScenarioId)}
-                    className="rounded-md border border-replit-border bg-replit-bg px-2 py-1 text-xs text-replit-text"
-                  >
-                    <option value="A">A: Binary LogReg</option>
-                    <option value="B">B: Multiclass RF</option>
-                    <option value="C">C: Regression Ridge</option>
-                  </select>
-                </label>
-              </div>
-            </div>
-
-            <div className="mt-3 py-2">
-              <div
-                className="grid gap-3"
-                style={{ gridTemplateColumns: `repeat(${steps.length}, minmax(0, 1fr))` }}
-              >
-                {steps.map((s, idx) => {
-                  const isActive = idx === stepIndex;
-                  const isDone = idx < stepIndex;
-                  const nodeBg = isDone
-                    ? 'bg-replit-success/80 text-white border-replit-success/80'
-                    : isActive
-                      ? 'bg-replit-accent/90 text-white border-replit-accent/90'
-                      : 'bg-replit-surface/35 text-replit-textMuted border-replit-border/60';
-
-                  return (
-                    <div key={s.id} className="flex items-center gap-2">
-                      <div
-                        className={clsx(
-                          'relative w-7 h-7 rounded-full border flex items-center justify-center text-[11px] font-semibold shrink-0',
-                          nodeBg
-                        )}
-                        title={s.title}
-                      >
-                        {idx + 1}
-                        {isActive ? (
-                          <div
-                            aria-hidden
-                            className={clsx(
-                              'absolute -inset-1 rounded-full border-2 border-yellow-300/80 border-t-transparent',
-                              reducedMotion ? '' : 'animate-spin'
-                            )}
-                          />
-                        ) : null}
-                      </div>
-                      <div className={clsx('text-[11px] leading-tight', isActive ? 'text-replit-text' : 'text-replit-textMuted')}>
-                        {s.title}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        </div>
-
         {/* Main hero */}
         <div className="flex-1 overflow-hidden relative">
           <div className="p-4 h-full">
+            {/* Header with Proceed button */}
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <div className="text-lg font-semibold text-replit-text">{prompt.title}</div>
+                <div className="text-sm text-replit-textMuted mt-1">{prompt.subtitle}</div>
+              </div>
+              <div className="flex items-center gap-3">
+                {currentStage === 4 && showChangeOption ? (
+                  <>
+                    <input
+                      type="text"
+                      value={changeRequest}
+                      onChange={(e) => setChangeRequest(e.target.value)}
+                      placeholder="Describe what you'd like to change..."
+                      className="px-4 py-2 rounded-lg border border-replit-border bg-replit-bg text-replit-text text-sm placeholder:text-replit-textMuted focus:outline-none focus:ring-2 focus:ring-replit-accent/50 min-w-[300px]"
+                    />
+                    <button
+                      onClick={handleMakeChanges}
+                      disabled={!changeRequest.trim()}
+                      className={clsx(
+                        'px-4 py-2 rounded-lg border text-sm font-medium transition-colors whitespace-nowrap',
+                        changeRequest.trim()
+                          ? 'border-replit-border bg-replit-surface hover:bg-replit-surfaceHover text-replit-text cursor-pointer'
+                          : 'border-replit-border/40 bg-replit-surface/40 text-replit-textMuted cursor-not-allowed'
+                      )}
+                    >
+                      Make Changes
+                    </button>
+                    <button
+                      onClick={handleDeployment}
+                      className="px-4 py-2 rounded-lg bg-replit-accent hover:bg-replit-accent/90 text-white text-sm font-medium transition-colors whitespace-nowrap"
+                    >
+                      Deploy
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    onClick={handleProceed}
+                    disabled={isStageRunning}
+                    className={clsx(
+                      'px-6 py-2 rounded-lg text-sm font-medium transition-colors',
+                      isStageRunning
+                        ? 'bg-replit-border/40 text-replit-textMuted cursor-not-allowed'
+                        : 'bg-replit-accent hover:bg-replit-accent/90 text-white cursor-pointer'
+                    )}
+                  >
+                    {currentStage === 0 ? 'Start' : isStageRunning ? 'Running...' : 'Proceed'}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Show content only when stage is running */}
+            {!isStageRunning && currentStage === 0 && (
+              <div className="h-[calc(100%-80px)] flex items-center justify-center">
+                <div className="text-center max-w-2xl">
+                  <div className="text-6xl mb-6">🚀</div>
+                  <h2 className="text-2xl font-bold text-replit-text mb-3">Let's Build Your AI Model</h2>
+                  <p className="text-replit-textMuted mb-6">
+                    Our automated pipeline will handle everything from data loading to deployment.
+                    Click 'Start' when you're ready to begin.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {(isStageRunning || (!isStageRunning && stageCompleted && currentStage > 0)) && (
+            <div className="relative h-[calc(100%-80px)]">
+              {/* Animation Content - always visible but blurred when completed */}
+              <div className={clsx(
+                'h-full transition-all duration-500',
+                !isStageRunning && stageCompleted && 'blur-sm'
+              )}>
             <AnimatePresence mode="wait" initial={false}>
               {/* Operation */}
               {phase.kind === 'operation' ? (
@@ -647,40 +771,418 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
                   className="h-full"
                 >
                   <div className="h-full flex flex-col min-h-0">
-                    <div className={clsx(
-                      'rounded-2xl border border-replit-border bg-replit-surface shadow-sm p-8 h-full overflow-hidden',
-                      step.id === 'matrixOps' && 'pb-[50px]'
-                    )}>
-                      <div className="text-xs text-replit-textMuted mb-4">Operation</div>
+                    <div className="rounded-2xl border border-replit-border bg-replit-surface shadow-sm p-8 h-full overflow-hidden">
+                      {currentStage === 1 ? (
+                        <div className="h-full flex flex-col">
+                          {/* Thinking Panel */}
+                          <div className="flex-1 rounded-xl bg-replit-surface/35 p-6 pb-6 pt-2 min-h-0 flex flex-col">
+                            <div className="flex items-center gap-3 mb-3">
+                              <div className="text-lg font-semibold text-replit-text">AutoML Assistant</div>
+                              {isStageRunning && (
+                                <div className={reducedMotion ? 'grid grid-cols-3 gap-0.5 opacity-80' : 'grid grid-cols-3 gap-0.5 opacity-90'}>
+                                  {Array.from({ length: 9 }).map((_, i) => {
+                                    const colors = ['bg-replit-accent/60', 'bg-replit-success/50', 'bg-replit-warning/50'];
+                                    return (
+                                      <div
+                                        key={i}
+                                        className={
+                                          `h-2 w-2 rounded-[2px] ${colors[i % colors.length]} ` +
+                                          (reducedMotion ? '' : 'animate-[matrixPulse_900ms_ease-in-out_infinite]')
+                                        }
+                                        style={!reducedMotion ? { animationDelay: `${i * 70}ms` } : undefined}
+                                      />
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
 
-                      <div className="mb-5 rounded-xl border border-replit-border/60 bg-replit-surface/35 p-4">
-                        <div className="text-[11px] text-replit-textMuted mb-2">Formula</div>
-                        <div className="text-replit-text overflow-hidden">
-                          <div className="flex justify-center">
-                            <div className="origin-center scale-[1.02] md:scale-[1.08]">
-                              <BlockMath math={step.equations[0] ?? ''} />
+                            <div
+                              className="flex-1 overflow-auto rounded-lg bg-replit-surface/40 p-6 relative"
+                              style={{
+                                WebkitMaskImage:
+                                  'linear-gradient(to bottom, rgba(0,0,0,0.25) 0%, rgba(0,0,0,0.6) 10%, rgba(0,0,0,1) 32%, rgba(0,0,0,1) 100%)',
+                                maskImage:
+                                  'linear-gradient(to bottom, rgba(0,0,0,0.25) 0%, rgba(0,0,0,0.6) 10%, rgba(0,0,0,1) 32%, rgba(0,0,0,1) 100%)',
+                                WebkitMaskRepeat: 'no-repeat',
+                                maskRepeat: 'no-repeat',
+                                WebkitMaskSize: '100% 100%',
+                                maskSize: '100% 100%',
+                              }}
+                            >
+                              {stage1Thinking.length === 0 ? (
+                                <div className="flex items-center gap-3 text-replit-textMuted">
+                                  <div className={reducedMotion ? 'grid grid-cols-3 gap-0.5 opacity-80' : 'grid grid-cols-3 gap-0.5 opacity-90'}>
+                                    {Array.from({ length: 9 }).map((_, i) => {
+                                      const colors = ['bg-replit-accent/50', 'bg-replit-success/40', 'bg-replit-warning/40'];
+                                      return (
+                                        <div
+                                          key={i}
+                                          className={
+                                            `h-3 w-3 rounded-[2px] ${colors[i % colors.length]} ` +
+                                            (reducedMotion ? '' : 'animate-[matrixPulse_900ms_ease-in-out_infinite]')
+                                          }
+                                          style={!reducedMotion ? { animationDelay: `${i * 70}ms` } : undefined}
+                                        />
+                                      );
+                                    })}
+                                  </div>
+                                  <span className="text-base">Thinking...</span>
+                                </div>
+                              ) : (
+                                <div className="space-y-4">
+                                  {stage1Thinking.slice(-50).map((msg, idx) => (
+                                    <div key={`${idx}-${msg.slice(0, 20)}`} className="text-base leading-relaxed text-replit-text">
+                                      <span className="text-replit-accent font-medium">▸ </span>
+                                      {msg}
+                                    </div>
+                                  ))}
+                                  {isStageRunning && (
+                                    <div className="flex items-center gap-2 text-replit-textMuted">
+                                      <div className={reducedMotion ? 'grid grid-cols-3 gap-0.5 opacity-80' : 'grid grid-cols-3 gap-0.5 opacity-90'}>
+                                        {Array.from({ length: 9 }).map((_, i) => {
+                                          const colors = ['bg-replit-accent/50', 'bg-replit-success/40', 'bg-replit-warning/40'];
+                                          return (
+                                            <div
+                                              key={i}
+                                              className={
+                                                `h-2.5 w-2.5 rounded-[2px] ${colors[i % colors.length]} ` +
+                                                (reducedMotion ? '' : 'animate-[matrixPulse_900ms_ease-in-out_infinite]')
+                                              }
+                                              style={!reducedMotion ? { animationDelay: `${i * 70}ms` } : undefined}
+                                            />
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           </div>
                         </div>
-                      </div>
+                      ) : currentStage === 2 ? (
+                        <div className="h-full flex flex-col">
+                          {metricsState.datasetPreview?.dataType === 'image' ? (
+                            /* Stage 2: Image Vectorization Animation */
+                            <div className="flex-1 rounded-xl bg-replit-surface/35 p-6 min-h-0 flex flex-col">
+                              <div className="flex items-center justify-between mb-4">
+                                <div className="text-base font-semibold text-replit-text">Image Vectorization</div>
+                                <div className="text-xs text-replit-textMuted">20×20 pixels → 400-d vector</div>
+                              </div>
 
-                      <div className="mx-auto max-w-5xl">
-                        <MatrixGrid
-                          label={step.matrixLabel ?? 'X'}
-                          rows={step.matrixRows ?? 6}
-                          cols={step.matrixCols ?? 8}
-                          timeMs={now}
-                          reducedMotion={reducedMotion}
-                        />
-                      </div>
+                              <div className="flex-1 overflow-hidden rounded-lg bg-replit-surface/40 p-4 relative">
+                                {(() => {
+                                  const totalDuration = step.durationMs;
+                                  const imageElapsed = imageAnimStartedAt === null ? 0 : Math.max(0, now - imageAnimStartedAt);
+                                  const animStage = imageElapsed < totalDuration * 0.2 ? 0
+                                    : imageElapsed < totalDuration * 0.45 ? 1
+                                    : imageElapsed < totalDuration * 0.7 ? 2
+                                    : 3;
 
-                      <div className="mt-6 text-xs text-replit-textMuted">
-                        {phaseProgress < 0.33
-                          ? 'Multiplying (row × column)…'
-                          : phaseProgress < 0.66
-                            ? 'Accumulating partial sums…'
-                            : 'Writing the next tensor…'}
-                      </div>
+                                  const gridSize = 20;
+                                  const canvasSize = 280;
+                                  const canvasLeft = 40;
+                                  const canvasTop = 56;
+                                  const cellSize = canvasSize / gridSize;
+                                  const particleSize = 16;
+
+                                  const pixels = loadedImagePixels ?? [];
+                                  const hasPixels = pixels.length >= gridSize * gridSize;
+
+                                  const particles = hasPixels
+                                    ? pixels.slice(0, gridSize * gridSize).map((pixel, idx) => {
+                                        const gridX = idx % gridSize;
+                                        const gridY = Math.floor(idx / gridSize);
+                                        const startX = canvasLeft + gridX * cellSize + cellSize / 2 - particleSize / 2;
+                                        const startY = canvasTop + gridY * cellSize + cellSize / 2 - particleSize / 2;
+                                        return { ...pixel, gridX, gridY, startX, startY, idx };
+                                      })
+                                    : [];
+
+                                  const displayCount = 100;
+                                  const displayStart = Math.floor((particles.length - displayCount) / 2);
+
+                                  return (
+                                    <>
+                                      {/* Original Canvas */}
+                                      <div
+                                        className="absolute transition-all duration-[1500ms] ease-out"
+                                        style={{
+                                          left: `${canvasLeft}px`,
+                                          top: `${canvasTop}px`,
+                                          opacity: !hasPixels ? 0 : animStage >= 1 ? 0 : 1,
+                                          transform: animStage >= 1 ? 'scale(0.92)' : 'scale(1)',
+                                          filter: animStage >= 1 ? 'blur(10px)' : 'blur(0px)',
+                                        }}
+                                      >
+                                        <canvas
+                                          ref={imageCanvasRef}
+                                          width={canvasSize}
+                                          height={canvasSize}
+                                          className="border border-replit-border/70 rounded-xl bg-white/95 shadow-xl"
+                                        />
+                                        <div className="text-center mt-3 text-replit-textMuted font-medium text-xs">
+                                          Original Image
+                                        </div>
+                                      </div>
+
+                                      {!hasPixels && (
+                                        <div className="absolute inset-0 flex items-center justify-center">
+                                          <div className="text-sm text-replit-textMuted">Loading image…</div>
+                                        </div>
+                                      )}
+
+                                      {/* Stage Label */}
+                                      {animStage === 1 && (
+                                        <motion.div
+                                          initial={{ opacity: 0, y: -10 }}
+                                          animate={{ opacity: 1, y: 0 }}
+                                          className="absolute left-1/2 top-4 transform -translate-x-1/2 text-replit-text text-sm font-semibold"
+                                        >
+                                          Breaking into pixels...
+                                        </motion.div>
+                                      )}
+                                      {animStage === 2 && (
+                                        <motion.div
+                                          initial={{ opacity: 0 }}
+                                          animate={{ opacity: 1 }}
+                                          className="absolute left-64 top-64 text-replit-text text-xs font-medium bg-replit-surface/70 px-2 py-1 rounded"
+                                        >
+                                          Pixel Grid
+                                        </motion.div>
+                                      )}
+                                      {animStage === 3 && (
+                                        <>
+                                          <motion.div
+                                            initial={{ opacity: 0, y: -10 }}
+                                            animate={{ opacity: 1, y: 0 }}
+                                            className="absolute top-4 left-1/2 transform -translate-x-1/2 text-center"
+                                          >
+                                            <div className="text-replit-text text-sm font-semibold">Vector Representation</div>
+                                            <div className="text-replit-textMuted text-xs">RGB color vectors</div>
+                                          </motion.div>
+                                          <div className="absolute text-replit-accent text-6xl font-bold left-8 top-1/2 transform -translate-y-1/2">⟨</div>
+                                          <div className="absolute text-replit-accent text-6xl font-bold right-8 top-1/2 transform -translate-y-1/2">⟩</div>
+                                        </>
+                                      )}
+
+                                      {/* Particles */}
+                                      {hasPixels &&
+                                        particles.map((particle) => {
+                                        const getStyle = () => {
+                                          const color = `rgb(${particle.r}, ${particle.g}, ${particle.b})`;
+                                          const baseTransition = reducedMotion ? 'none' : 'all 1.5s cubic-bezier(0.23, 1, 0.32, 1)';
+
+                                          if (animStage === 0) {
+                                            return {
+                                              left: `${particle.startX}px`,
+                                              top: `${particle.startY}px`,
+                                              width: '16px',
+                                              height: '16px',
+                                              opacity: 0,
+                                              transform: 'scale(0)',
+                                            };
+                                          }
+
+                                          if (animStage === 1) {
+                                            return {
+                                              left: `${particle.startX}px`,
+                                              top: `${particle.startY}px`,
+                                              width: '16px',
+                                              height: '16px',
+                                              backgroundColor: color,
+                                              opacity: 1,
+                                              transform: 'scale(1)',
+                                              transition: baseTransition,
+                                              transitionDelay: `${particle.idx * 0.001}s`,
+                                            };
+                                          }
+
+                                          if (animStage === 2) {
+                                            const gridCellSize = 14;
+                                            return {
+                                              left: `${canvasLeft + 20 + particle.gridX * gridCellSize}px`,
+                                              top: `${canvasTop + 30 + particle.gridY * gridCellSize}px`,
+                                              width: `${gridCellSize - 1}px`,
+                                              height: `${gridCellSize - 1}px`,
+                                              backgroundColor: color,
+                                              opacity: 1,
+                                              transform: 'scale(1)',
+                                              transition: baseTransition,
+                                              transitionDelay: `${(particle.gridY * gridSize + particle.gridX) * 0.001}s`,
+                                            };
+                                          }
+
+                                          if (animStage === 3) {
+                                            const isVisible = particle.idx >= displayStart && particle.idx < displayStart + displayCount;
+                                            if (!isVisible) {
+                                              return { opacity: 0, transform: 'scale(0)' };
+                                            }
+
+                                            const relativeIdx = particle.idx - displayStart;
+                                            const itemsPerColumn = 20;
+                                            const columnIdx = Math.floor(relativeIdx / itemsPerColumn);
+                                            const rowIdx = relativeIdx % itemsPerColumn;
+                                            const vectorX = 100 + columnIdx * 220;
+                                            const vectorY = 60 + rowIdx * 28;
+
+                                            return {
+                                              left: `${vectorX}px`,
+                                              top: `${vectorY}px`,
+                                              opacity: 1,
+                                              transform: 'scale(1)',
+                                              transition: baseTransition,
+                                              transitionDelay: `${relativeIdx * 0.0015}s`,
+                                            };
+                                          }
+                                        };
+
+                                        const style = getStyle();
+                                        const isVectorStage = animStage === 3;
+                                        const isVisible = particle.idx >= displayStart && particle.idx < displayStart + displayCount;
+
+                                        return (
+                                          <div
+                                            key={particle.idx}
+                                            className="absolute will-change-transform"
+                                            style={{
+                                              ...style,
+                                              borderRadius: animStage === 2 ? '1px' : '3px',
+                                            }}
+                                          >
+                                            {isVectorStage && isVisible && (
+                                              <div className="flex items-center gap-2 px-3 py-1.5 bg-replit-surface/95 rounded border border-replit-border/60 shadow-lg">
+                                                <span className="text-replit-accent font-mono text-[10px] font-semibold min-w-[42px]">
+                                                  v[{particle.idx}]
+                                                </span>
+                                                <span className="text-replit-text font-mono text-[10px] font-bold">
+                                                  ({particle.r},{particle.g},{particle.b})
+                                                </span>
+                                                <div
+                                                  className="w-6 h-3 rounded"
+                                                  style={{
+                                                    backgroundColor: `rgb(${particle.r}, ${particle.g}, ${particle.b})`,
+                                                    border: '1px solid rgba(255,255,255,0.2)',
+                                                  }}
+                                                />
+                                              </div>
+                                            )}
+                                          </div>
+                                        );
+                                      })}
+
+                                      <div className="absolute bottom-4 left-4 text-xs text-replit-textMuted">
+                                        {imageElapsed < totalDuration * 0.2
+                                          ? 'Loading image...'
+                                          : imageElapsed < totalDuration * 0.45
+                                            ? 'Digitizing pixels...'
+                                            : imageElapsed < totalDuration * 0.7
+                                              ? 'Arranging grid...'
+                                              : 'Generating feature vectors...'}
+                                      </div>
+                                    </>
+                                  );
+                                })()}
+                              </div>
+                            </div>
+                          ) : (
+                            /* Stage 2: Tabular Data Preview with Progressive Row Loading */
+                            <div className="flex-1 rounded-xl bg-replit-surface/35 p-6 min-h-0 flex flex-col">
+                              <div className="flex items-center justify-between mb-4">
+                                <div className="text-base font-semibold text-replit-text">Data Preview</div>
+                                <div className="text-xs text-replit-textMuted">70,430 rows × 24 columns</div>
+                              </div>
+
+                              <div className="flex-1 overflow-hidden rounded-lg bg-replit-surface/40 p-4 md:p-6 flex flex-col min-h-0">
+                                <div className="text-xs text-replit-textMuted mb-3">Profiling schema and computing statistics</div>
+                                
+                                {/* Matrix Grid with Progressive Row Animation */}
+                                <div className="flex-1 min-h-0 flex items-center justify-center">
+                                  <div
+                                    className="grid gap-px rounded-lg border border-replit-border/60 bg-replit-border/60 p-px overflow-hidden w-full h-full"
+                                    style={{ 
+                                      gridTemplateColumns: `repeat(${step.matrixCols ?? 6}, minmax(0, 1fr))`,
+                                      gridTemplateRows: `repeat(${step.matrixRows ?? 8}, minmax(0, 1fr))`
+                                    }}
+                                  >
+                                    {Array.from({ length: (step.matrixRows ?? 8) * (step.matrixCols ?? 6) }).map((_, idx) => {
+                                      const cols = step.matrixCols ?? 6;
+                                      const r = Math.floor(idx / cols);
+                                      const c = idx % cols;
+                                      const previewData = metricsState.datasetPreview;
+                                      const display = previewData?.rows?.[r]?.[c] ?? 0;
+
+                                      // Calculate which row should be visible based on time
+                                      const totalDuration = step.durationMs;
+                                      const rowDuration = totalDuration / (step.matrixRows ?? 8);
+                                      const rowStartTime = r * rowDuration;
+                                      const rowVisible = elapsed >= rowStartTime;
+
+                                      return (
+                                        <motion.div
+                                          key={idx}
+                                          initial={{ opacity: 0, y: 8 }}
+                                          animate={rowVisible ? { opacity: 1, y: 0 } : { opacity: 0, y: 8 }}
+                                          transition={{
+                                            duration: reducedMotion ? 0 : 0.4,
+                                            delay: reducedMotion ? 0 : c * 0.05,
+                                            ease: 'easeOut'
+                                          }}
+                                          className="flex items-center justify-center font-mono select-none text-xs md:text-sm bg-replit-surface/40 text-replit-text min-h-0"
+                                        >
+                                          {typeof display === 'number' ? display.toFixed(2) : display}
+                                        </motion.div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+
+                                <div className="mt-3 text-xs text-replit-textMuted">
+                                  {elapsed < step.durationMs * 0.3
+                                    ? 'Scanning columns and detecting types...'
+                                    : elapsed < step.durationMs * 0.7
+                                      ? 'Computing missingness and distributions...'
+                                      : 'Finalizing schema profile...'}
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <>
+                          <div className="text-xs text-replit-textMuted mb-4">Operation</div>
+
+                          <div className="mb-5 rounded-xl border border-replit-border/60 bg-replit-surface/35 p-4">
+                            <div className="text-[11px] text-replit-textMuted mb-2">Formula</div>
+                            <div className="text-replit-text overflow-hidden">
+                              <div className="flex justify-center">
+                                <div className="origin-center scale-[1.02] md:scale-[1.08]">
+                                  <BlockMath math={step.equations?.[0] ?? ''} />
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="mx-auto max-w-5xl">
+                            <MatrixGrid
+                              label={step.matrixLabel ?? 'X'}
+                              rows={step.matrixRows ?? 6}
+                              cols={step.matrixCols ?? 8}
+                              timeMs={now}
+                              reducedMotion={reducedMotion}
+                            />
+                          </div>
+
+                          <div className="mt-6 text-xs text-replit-textMuted">
+                            {phaseProgress < 0.33
+                              ? 'Multiplying (row ├ù column)ΓÇª'
+                              : phaseProgress < 0.66
+                                ? 'Accumulating partial sumsΓÇª'
+                                : 'Writing the next tensorΓÇª'}
+                          </div>
+                        </>
+                      )}
                     </div>
                   </div>
                 </motion.div>
@@ -710,10 +1212,10 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
                       )}
                       <div className="mt-6 text-xs text-replit-textMuted">
                         {phase.graphType === 'loss'
-                          ? 'Plotting loss curve…'
+                          ? 'Plotting loss curveΓÇª'
                           : useRmse
-                            ? 'Plotting RMSE curve…'
-                            : 'Plotting accuracy curve…'}
+                            ? 'Plotting RMSE curveΓÇª'
+                            : 'Plotting accuracy curveΓÇª'}
                       </div>
                     </div>
                   </div>
@@ -772,6 +1274,97 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
                 </motion.div>
               ) : null}
             </AnimatePresence>
+            </div>
+
+            {/* Completion Overlay - shown on top of blurred animation */}
+            {!isStageRunning && stageCompleted && currentStage > 0 && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.9 }}
+                transition={{ duration: 0.3 }}
+                className="absolute inset-0 flex items-center justify-center pointer-events-none"
+              >
+                <div className="text-center max-w-2xl bg-replit-surface/95 backdrop-blur-md rounded-2xl border border-replit-border shadow-2xl p-8 pointer-events-auto">
+                  <div className="text-6xl mb-6 text-green-500">✓</div>
+                  <h2 className="text-2xl font-bold text-replit-text mb-3">
+                    {currentStage === 4 && showChangeOption ? 'Ready for Next Steps' : 'Stage Completed!'}
+                  </h2>
+                  {currentStage === 4 && showChangeOption ? (
+                    <p className="text-replit-textMuted mb-6">
+                      Would you like to make any changes to your model, or proceed to deployment?
+                    </p>
+                  ) : (
+                    <p className="text-replit-textMuted mb-6">
+                      Click 'Proceed' to continue to the next stage.
+                    </p>
+                  )}
+                </div>
+              </motion.div>
+            )}
+            </div>
+            )}
+          </div>
+        </div>
+
+        {/* Bottom: Fixed linked list nodes */}
+        <div className="shrink-0 border-t border-replit-border bg-replit-surface">
+          <div className="px-4 py-4">
+            <div className="flex items-center justify-center gap-0">
+              {fixedNodes.map((node, idx) => {
+                const isActive = idx + 1 === currentStage && isStageRunning;
+                const isDone = idx + 1 < currentStage;
+                const nodeBg = isDone
+                  ? 'bg-replit-success/80 text-white border-replit-success/80'
+                  : isActive
+                    ? 'bg-replit-accent/90 text-white border-replit-accent/90'
+                    : 'bg-replit-surface/35 text-replit-textMuted border-replit-border/60';
+
+                return (
+                  <div key={node.id} className="flex items-center">
+                    <div className="flex flex-col items-center gap-1">
+                      <div
+                        className={clsx(
+                          'relative w-10 h-10 rounded-full border-2 flex items-center justify-center text-sm font-semibold shrink-0 transition-all',
+                          nodeBg
+                        )}
+                      >
+                        {node.id}
+                        {isActive ? (
+                          <div
+                            aria-hidden
+                            className={clsx(
+                              'absolute -inset-1 rounded-full border-2 border-yellow-300/80 border-t-transparent',
+                              reducedMotion ? '' : 'animate-spin'
+                            )}
+                          />
+                        ) : null}
+                      </div>
+                      <div className={clsx('text-xs font-medium', isActive ? 'text-replit-text' : 'text-replit-textMuted')}>
+                        {node.label}
+                      </div>
+                    </div>
+                    {idx < fixedNodes.length - 1 && (
+                      <div className="flex items-center">
+                        <div 
+                          className={clsx(
+                            'h-0.5 w-12 transition-all',
+                            isDone ? 'bg-replit-success/60' : 'bg-replit-border/60'
+                          )}
+                        />
+                        <div 
+                          className={clsx(
+                            'w-0 h-0 border-t-4 border-b-4 border-l-6 transition-all',
+                            'border-t-transparent border-b-transparent',
+                            isDone ? 'border-l-replit-success/60' : 'border-l-replit-border/60'
+                          )}
+                        />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       </div>

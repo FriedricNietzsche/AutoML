@@ -18,7 +18,7 @@ export type StepDef = {
   id: string;
   title: string;
   subtitle: string;
-  equations: string[];
+  equations?: string[];
   durationMs: number;
   matrixLabel?: string;
   matrixRows?: number;

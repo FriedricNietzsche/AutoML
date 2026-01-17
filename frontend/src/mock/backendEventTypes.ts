@@ -25,6 +25,12 @@ export type BackendEvent =
   | { type: 'LOSS_SURFACE_SPEC'; spec: LossSurfaceSpec; ts: number }
   | { type: 'GD_PATH'; points: Array<{ x: number; y: number }>; ts: number }
   | {
+      type: 'MODEL_THINKING';
+      step: StepId;
+      messages: string[];
+      ts: number;
+    }
+  | {
       type: 'STEP_STATUS';
       step: StepId;
       status: 'waiting' | 'running' | 'complete';
@@ -97,6 +103,7 @@ export type BackendEvent =
       ts: number;
     }
   | { type: 'DATASET_INGESTED'; datasetId: string; rows: number; columns: number; ts: number }
+  | { type: 'DATASET_PREVIEW'; rows: number[][]; columns: string[]; dataType: 'tabular' | 'image'; imageData?: { width: number; height: number; pixels: Array<{ r: number; g: number; b: number }>; needsClientLoad?: boolean }; ts: number }
   | { type: 'PROFILE_PROGRESS'; stage: string; progress: number; ts: number }
   | {
       type: 'PROFILE_SUMMARY';
