@@ -1,14 +1,14 @@
-import { useState, useMemo, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowRight, Plus, Moon, Sun } from 'lucide-react';
+import { useMemo, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { ArrowRight, Moon, Plus, Sun } from 'lucide-react';
 
 import {
   createBuildSession,
   isValidKaggleDatasetLink,
   setCurrentSession,
 } from '../lib/buildSession';
-import { useRouter } from '../router/router';
 import { useTheme } from '../lib/theme';
+import { useRouter } from '../router/router';
 import MatrixScreenLoader from '../components/MatrixScreenLoader';
 
 export default function HomePage() {
@@ -55,33 +55,58 @@ export default function HomePage() {
 
   return (
     <div className="min-h-screen bg-replit-bg text-replit-text relative overflow-hidden">
-      {isStarting && <MatrixScreenLoader label="Starting build…" />}
+      {isStarting && <MatrixScreenLoader label="Starting buildƒ?İ" />}
+
+      {/* Background glow */}
+      <div className="pointer-events-none absolute inset-0 -z-10">
+        <div
+          className="absolute -top-56 left-1/2 h-[720px] w-[720px] -translate-x-1/2 rounded-full blur-3xl opacity-25"
+          style={{
+            background:
+              'radial-gradient(circle at center, rgb(var(--replit-accent-rgb) / 0.55), transparent 60%)',
+          }}
+        />
+        <div
+          className="absolute -bottom-64 -left-56 h-[620px] w-[620px] rounded-full blur-3xl opacity-20"
+          style={{
+            background:
+              'radial-gradient(circle at center, rgb(168 85 247 / 0.55), transparent 60%)',
+          }}
+        />
+        <div
+          className="absolute top-28 -right-72 h-[680px] w-[680px] rounded-full blur-3xl opacity-15"
+          style={{
+            background:
+              'radial-gradient(circle at center, rgb(34 211 238 / 0.45), transparent 60%)',
+          }}
+        />
+      </div>
 
       {/* Logo */}
       <motion.div
         initial={{ opacity: 0, y: -6 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.35, ease: 'easeOut' }}
-        className="absolute top-6 left-6 flex items-center gap-2"
+        className="absolute top-8 left-8 flex items-center gap-3"
       >
-        <div className="text-lg font-semibold tracking-tight">
+        <div className="text-2xl font-semibold tracking-tight">
           <span className="text-replit-text">AI</span>
           <span className="text-replit-accent">AI</span>
         </div>
-        <div className="h-2 w-2 rounded-full bg-replit-accent shadow-[0_0_12px_rgba(15,98,254,0.8)]" />
+        <div className="h-3 w-3 rounded-full bg-replit-accent shadow-[0_0_18px_rgba(15,98,254,0.85)]" />
       </motion.div>
 
       {/* Theme toggle */}
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
-        className="absolute top-6 right-6"
+        className="absolute top-8 right-8"
       >
         <button
           onClick={toggleTheme}
-          className="rounded-lg border border-replit-border bg-replit-surface p-2 hover:bg-replit-surfaceHover transition"
+          className="rounded-xl border border-replit-border bg-replit-surface p-3 hover:bg-replit-surfaceHover transition"
         >
-          {theme === 'midnight' ? <Moon size={16} /> : <Sun size={16} />}
+          {theme === 'midnight' ? <Moon size={20} /> : <Sun size={20} />}
         </button>
       </motion.div>
 
@@ -92,21 +117,18 @@ export default function HomePage() {
         transition={{ duration: 0.4, ease: 'easeOut' }}
         className="flex min-h-screen flex-col items-center justify-center px-6"
       >
-        <h1 className="text-2xl md:text-3xl font-medium mb-6 text-center">
+        <h1 className="text-4xl md:text-5xl font-semibold mb-10 text-center">
           Hey, Mohamed. Ready to dive in?
         </h1>
 
         {/* Prompt container */}
-        <motion.div layout className="relative w-full max-w-2xl">
+        <motion.div layout className="relative w-full max-w-3xl">
           <motion.div
             style={{
               boxShadow: isBarFocused ? selectedGlow : idleGlow,
             }}
             whileHover={{
-              boxShadow:
-                isBarFocused
-                  ? selectedGlowHover
-                  : idleGlowHover,
+              boxShadow: isBarFocused ? selectedGlowHover : idleGlowHover,
             }}
             transition={{
               duration: 0.16,
@@ -119,16 +141,16 @@ export default function HomePage() {
                 setIsBarFocused(false);
               }
             }}
-            className="flex items-center rounded-2xl bg-replit-surface border border-replit-border px-3 py-2 shadow-sm"
+            className="flex items-center rounded-3xl bg-replit-surface border border-replit-border px-4 py-3 shadow-sm"
           >
             {/* + menu */}
             <div className="relative">
               <motion.button
                 whileTap={{ scale: 0.9 }}
-                onClick={() => setShowDatasetMenu(v => !v)}
-                className="p-2 rounded-lg hover:bg-replit-surfaceHover transition"
+                onClick={() => setShowDatasetMenu((v) => !v)}
+                className="p-3 rounded-xl hover:bg-replit-surfaceHover transition"
               >
-                <Plus size={18} />
+                <Plus size={22} />
               </motion.button>
 
               <AnimatePresence>
@@ -138,9 +160,9 @@ export default function HomePage() {
                     animate={{ opacity: 1, scale: 1, y: 0 }}
                     exit={{ opacity: 0, scale: 0.96, y: -6 }}
                     transition={{ duration: 0.18, ease: 'easeOut' }}
-                    className="absolute left-0 top-11 w-72 rounded-xl border border-replit-border bg-replit-surface p-3 z-20 backdrop-blur"
+                    className="absolute left-0 top-14 w-80 rounded-2xl border border-replit-border bg-replit-surface p-4 z-20 backdrop-blur"
                   >
-                    <label className="text-xs font-medium mb-1 block">
+                    <label className="text-sm font-medium mb-2 block">
                       Kaggle dataset link
                     </label>
                     <input
@@ -148,7 +170,7 @@ export default function HomePage() {
                       onChange={(e) => setKaggleLink(e.target.value)}
                       placeholder="https://kaggle.com/datasets/..."
                       className={
-                        'w-full rounded-lg bg-replit-bg border px-3 py-2 text-sm outline-none transition ' +
+                        'w-full rounded-xl bg-replit-bg border px-4 py-3 text-sm outline-none transition ' +
                         (kaggleOk
                           ? 'border-replit-border focus:ring-2 focus:ring-replit-accent/30'
                           : 'border-yellow-400 focus:ring-2 focus:ring-yellow-400/30')
@@ -169,7 +191,7 @@ export default function HomePage() {
               onChange={(e) => setGoalPrompt(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && onStart()}
               placeholder="Ask anything"
-              className="flex-1 bg-transparent px-3 py-2 text-sm outline-none"
+              className="flex-1 bg-transparent px-4 py-3 text-base md:text-lg outline-none"
             />
 
             {/* Send button */}
@@ -179,13 +201,11 @@ export default function HomePage() {
               onClick={onStart}
               disabled={!canStart}
               className={
-                'p-2 rounded-lg transition ' +
-                (canStart
-                  ? 'bg-replit-accent text-white'
-                  : 'text-replit-textMuted')
+                'p-3 rounded-xl transition ' +
+                (canStart ? 'bg-replit-accent text-white' : 'text-replit-textMuted')
               }
             >
-              <ArrowRight size={18} />
+              <ArrowRight size={22} />
             </motion.button>
           </motion.div>
         </motion.div>
@@ -193,3 +213,4 @@ export default function HomePage() {
     </div>
   );
 }
+
