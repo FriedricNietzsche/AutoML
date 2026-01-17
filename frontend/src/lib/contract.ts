@@ -10,7 +10,44 @@ export type StageID =
 
 export type StageStatus = 'PENDING' | 'IN_PROGRESS' | 'WAITING_CONFIRMATION' | 'COMPLETED' | 'FAILED' | 'SKIPPED';
 
-export type EventType = 'HELLO' | 'STAGE_STATUS' | 'WAITING_CONFIRMATION' | 'LOG_LINE' | 'PLAN_PROPOSED' | 'PLAN_APPROVED';
+export type EventType =
+  | 'HELLO'
+  | 'STAGE_STATUS'
+  | 'WAITING_CONFIRMATION'
+  | 'PLAN_PROPOSED'
+  | 'PLAN_APPROVED'
+  | 'FILE_TREE_UPDATE'
+  | 'ARTIFACT_ADDED'
+  | 'PROMPT_PARSED'
+  | 'DATASET_CANDIDATES'
+  | 'DATASET_SELECTED'
+  | 'MODEL_CANDIDATES'
+  | 'MODEL_SELECTED'
+  | 'DATASET_SAMPLE_READY'
+  | 'PROFILE_PROGRESS'
+  | 'PROFILE_SUMMARY'
+  | 'MISSINGNESS_TABLE_READY'
+  | 'TARGET_DISTRIBUTION_READY'
+  | 'SPLIT_SUMMARY'
+  | 'PREPROCESS_PLAN'
+  | 'TRAIN_RUN_STARTED'
+  | 'TRAIN_PROGRESS'
+  | 'METRIC_SCALAR'
+  | 'LEADERBOARD_UPDATED'
+  | 'BEST_MODEL_UPDATED'
+  | 'CONFUSION_MATRIX_READY'
+  | 'ROC_CURVE_READY'
+  | 'RESIDUALS_PLOT_READY'
+  | 'FEATURE_IMPORTANCE_READY'
+  | 'RESOURCE_STATS'
+  | 'LOG_LINE'
+  | 'TRAIN_RUN_FINISHED'
+  | 'REPORT_READY'
+  | 'NOTEBOOK_READY'
+  | 'CODE_WORKSPACE_READY'
+  | 'EDIT_SUGGESTIONS'
+  | 'EXPORT_PROGRESS'
+  | 'EXPORT_READY';
 
 export interface StageDefinition {
   id: StageID;
@@ -41,4 +78,80 @@ export interface WaitingConfirmationPayload {
   stage_id: StageID;
   summary: string;
   next_actions: string[];
+}
+
+export interface StageInfo {
+  id: StageID;
+  index: number;
+  status: StageStatus;
+}
+
+export interface WSEventPayload<T extends EventType = EventType, P = unknown> {
+  name: T;
+  payload: P;
+}
+
+export interface WSEnvelope<T extends EventType = EventType, P = unknown> {
+  v: number;
+  type: 'EVENT';
+  project_id: string;
+  seq: number;
+  ts: number;
+  stage: StageInfo;
+  event: WSEventPayload<T, P>;
+}
+
+export interface LogLinePayload {
+  run_id: string;
+  level: 'INFO' | 'WARN' | 'ERROR';
+  text: string;
+}
+
+export interface ProfileProgressPayload {
+  phase: string;
+  pct: number;
+}
+
+export interface DatasetSampleReadyPayload {
+  asset_url: string;
+  columns: string[];
+  n_rows: number;
+}
+
+export interface ProfileSummaryPayload {
+  n_rows: number;
+  n_cols: number;
+  missing_pct: number;
+  types_breakdown: Record<string, number>;
+  warnings: string[];
+}
+
+export interface TrainProgressPayload {
+  run_id: string;
+  epoch: number;
+  epochs: number;
+  step: number;
+  steps: number;
+  eta_s: number | null;
+  phase: 'init' | 'fit' | 'eval' | 'finalize' | string;
+}
+
+export interface MetricScalarPayload {
+  run_id: string;
+  name: string;
+  split: 'train' | 'val' | 'test';
+  step: number;
+  value: number;
+}
+
+export interface ArtifactInfo {
+  id: string;
+  type: string;
+  name: string;
+  url: string;
+  meta?: Record<string, unknown>;
+}
+
+export interface ArtifactAddedPayload {
+  artifact: ArtifactInfo;
 }
