@@ -14,3 +14,5 @@ pydantic>=2.5.0
 python-multipart>=0.0.6
 aiofiles>=23.0.0
 langchain_google_genai
+matplotlib>=3.7.0
+seaborn>=0.12.0
