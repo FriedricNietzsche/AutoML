@@ -28,12 +28,36 @@ class StageStatus(str, Enum):
     SKIPPED = "SKIPPED"
 
 
+# Stage order helper so we can attach the canonical index to envelopes.
+STAGE_SEQUENCE: List[StageID] = [
+    StageID.PARSE_INTENT,
+    StageID.DATA_SOURCE,
+    StageID.PROFILE_DATA,
+    StageID.PREPROCESS,
+    StageID.MODEL_SELECT,
+    StageID.TRAIN,
+    StageID.REVIEW_EDIT,
+    StageID.EXPORT,
+]
+
+
+def stage_index(stage_id: StageID) -> int:
+    """Return the stable index for a given stage id."""
+    try:
+        return STAGE_SEQUENCE.index(stage_id)
+    except ValueError:
+        return 0
+
+
 # ============================================================================
 # EVENT TYPE DEFINITIONS
 # ============================================================================
 
 class EventType(str, Enum):
     """All possible event types in the system"""
+
+    # Connection lifecycle
+    HELLO = "HELLO"
     
     # Global Events
     STAGE_STATUS = "STAGE_STATUS"
@@ -103,13 +127,20 @@ class EventPayload(BaseModel):
 
 class EventMessage(BaseModel):
     """WebSocket message envelope - wraps all events"""
-    v: int  # Protocol version
-    type: str  # Message type (usually "event")
+    v: int = 1  # Protocol version
+    type: str = "EVENT"  # Message type (usually "EVENT")
     project_id: str
-    seq: int  # Sequence number
+    seq: int  # Sequence number (monotonic per project)
     ts: int  # Timestamp (unix milliseconds)
     stage: Stage
     event: EventPayload
+
+
+class WSEnvelope(EventMessage):
+    """
+    Compatibility alias used throughout the codebase.
+    """
+    pass
 
 
 # ============================================================================

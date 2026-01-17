@@ -1,28 +1,54 @@
+"""
+AutoML Agentic Builder - Backend API
+"""
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import projects, chat, stages, assets
-from app.ws.hub import websocket_router
+import logging
 
-app = FastAPI()
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 
-# CORS middleware to allow requests from the frontend
+app = FastAPI(
+    title="AutoML Agentic Builder",
+    description="Backend API for the AutoML Agentic Builder",
+    version="0.1.0"
+)
+
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Update this to restrict origins in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include API routers
-app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
-app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
-app.include_router(stages.router, prefix="/api/stages", tags=["stages"])
-app.include_router(assets.router, prefix="/api/assets", tags=["assets"])
+# Import and include routers
+from app.ws.router import router as ws_router
+from app.api.test import router as test_router
 
 # Include WebSocket router
-app.include_router(websocket_router, prefix="/ws", tags=["websocket"])
+app.include_router(ws_router)
+
+# Include test router
+app.include_router(test_router)
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    return {"status": "healthy", "service": "automl-backend"}
+
 
 @app.get("/")
 async def root():
-    return {"message": "Welcome to the AutoML Agentic Builder API!"}
+    """Root endpoint."""
+    return {
+        "message": "AutoML Agentic Builder API",
+        "docs": "/docs",
+        "health": "/health",
+        "websocket": "/ws/projects/{project_id}"
+    }
