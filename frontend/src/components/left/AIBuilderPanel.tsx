@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useReducedMotion } from 'framer-motion';
 import { ChevronLeft, ChevronDown, ChevronUp, ExternalLink, Plus, SlidersHorizontal, X, ArrowUp } from 'lucide-react';
 import { isValidKaggleDatasetLink, type BuildSession } from '../../lib/buildSession';
+import StageTimeline from './StageTimeline';
 
 interface AIBuilderPanelProps {
   session: BuildSession;
@@ -168,6 +169,8 @@ export default function AIBuilderPanel({
 
       {/* Body */}
       <div className="flex-1 min-h-0 flex flex-col">
+        <StageTimeline />
+
         {/* Model info (collapsible) */}
         <div className="shrink-0 p-3 border-b border-replit-border/40">
           <button
