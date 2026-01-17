@@ -33,6 +33,9 @@ export type StageStatus = z.infer<typeof StageStatusSchema>;
 // ============================================================================
 
 export const EventTypeSchema = z.enum([
+  // Connection lifecycle
+  "HELLO",
+
   // Global Events
   "STAGE_STATUS",
   "WAITING_CONFIRMATION",
