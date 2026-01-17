@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"name": "AutoML",
+			"path": ".."
+		},
+		{
+			"name": "frontend1",
+			"path": "../../Downloads/frontend1"
+		}
+	],
+	"settings": {}
+}

@@ -1,0 +1,95 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .glass {
+    /* Legacy class: keep name, but make it editor-like (solid panes) */
+    @apply bg-replit-surface border border-replit-border shadow-sm;
+  }
+}
+
+@layer base {
+  :root {
+    /* Light: crisp editor palette with slightly tinted background */
+    --replit-bg: 248 250 252;
+    --replit-surface: 255 255 255;
+    --replit-surface-hover: 241 245 249;
+    --replit-border: 226 232 240;
+    --replit-border-subtle: 231 235 243;
+    --replit-text: 15 23 42;
+    --replit-text-muted: 71 85 105;
+
+    /* Accent: vivid but professional */
+    --replit-accent: 37 99 235;
+    --replit-accent-hover: 29 78 216;
+
+    --replit-success: 22 163 74;
+    --replit-warning: 217 119 6;
+  }
+
+  .dark {
+    /* Midnight: deep navy (less "flat black") with higher color saturation */
+    --replit-bg: 10 15 28;
+    --replit-surface: 16 23 42;
+    --replit-surface-hover: 22 30 53;
+    --replit-border: 39 50 78;
+    --replit-border-subtle: 30 41 59;
+    --replit-text: 226 232 240;
+    --replit-text-muted: 148 163 184;
+
+    --replit-accent: 96 165 250;
+    --replit-accent-hover: 59 130 246;
+
+    --replit-success: 34 197 94;
+    --replit-warning: 251 191 36;
+  }
+
+  body {
+    @apply antialiased bg-replit-bg text-replit-text;
+    margin: 0;
+    padding: 0;
+  }
+  
+  * {
+    box-sizing: border-box;
+  }
+}
+
+/* Home background helpers */
+.home-bg-static {
+  position: absolute;
+  inset: 0;
+  background: transparent;
+}
+
+.dark .home-bg-static {
+  background: transparent;
+}
+
+.home-bg-animated {
+  position: absolute;
+  inset: 0;
+  background: transparent;
+}
+
+.dark .home-bg-animated {
+  background: transparent;
+}
+
+@keyframes homeFloat {
+  0% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(0, -10px, 0) scale(1.02); }
+  100% { transform: translate3d(0, 0, 0) scale(1); }
+}
+
+@keyframes matrixPulse {
+  0%, 100% { opacity: 0.35; transform: translateZ(0) scale(1); }
+  50% { opacity: 0.95; transform: translateZ(0) scale(1.05); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-bg-animated {
+    animation: none;
+  }
+}
