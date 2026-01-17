@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <script>
+      (function () {
+        try {
+          var key = 'autoai.theme';
+          var raw = localStorage.getItem(key);
+          var t = raw;
+          // Our React hook stores JSON (e.g. "midnight"). Support both JSON and plain strings.
+          if (typeof raw === 'string') {
+            try {
+              t = JSON.parse(raw);
+            } catch (e) {
+              // ignore
+            }
+          }
+          if (t === 'warm-sand') {
+            t = 'light';
+            localStorage.setItem(key, 'light');
+          }
+          var isDark = t === 'midnight';
+          var root = document.documentElement;
+          root.classList.toggle('dark', isDark);
+          root.dataset.theme = isDark ? 'midnight' : 'light';
+          // Reduce perceived flash before CSS/JS load by setting UA theme + baseline colors.
+          root.style.colorScheme = isDark ? 'dark' : 'light';
+          root.style.backgroundColor = isDark ? '#0a0f1c' : '#f8fafc';
+        } catch (e) {
+          // ignore
+        }
+      })();
+    </script>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>practice</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
