@@ -1,5 +1,5 @@
 """
-Export Bundle Module (Task 5.3 - Phase 4)
+Export Bundle Module (Task 5.3 - Phase 4 + Task 6.2)
 
 Creates downloadable export bundles (ZIP) with model, artifacts, and documentation.
 Lazy generation - only creates ZIP when explicitly requested.
@@ -8,6 +8,7 @@ Bundle contents:
   - model.joblib (trained pipeline)
   - metadata.json (full model metadata)
   - report.json (comprehensive report)
+  - notebook.ipynb (reproducible Jupyter notebook) [Task 6.2]
   - *.png (all plots)
   - inference_example.py (usage example)
   - requirements.txt (dependencies)
@@ -36,6 +37,7 @@ class ExportBundler:
     Features:
     - Lazy ZIP creation (on-demand)
     - Includes all artifacts and documentation
+    - Auto-generates Jupyter notebook (Task 6.2)
     - Generates standalone inference example
     - Creates comprehensive README
     - Emits EXPORT_READY event
@@ -53,14 +55,16 @@ class ExportBundler:
         bundler.emit_export_ready_event(emit_fn, zip_path)
     """
     
-    def __init__(self, base_dir: str = "data/projects"):
+    def __init__(self, base_dir: str = "data/projects", emit_event: Optional[Callable] = None):
         """
         Initialize export bundler.
         
         Args:
             base_dir: Base directory for project data
+            emit_event: Optional event emission function
         """
         self.base_dir = Path(base_dir)
+        self.emit_event = emit_event or (lambda *args, **kwargs: None)
         self.registry = ModelRegistry(base_dir=str(base_dir))
         self.report_gen = ReportGenerator(base_dir=str(base_dir))
     
@@ -69,6 +73,7 @@ class ExportBundler:
         run_id: str,
         project_id: str,
         include_source: bool = True,
+        include_notebook: bool = True,
         output_dir: Optional[str] = None
     ) -> str:
         """
@@ -78,6 +83,7 @@ class ExportBundler:
             run_id: Run identifier
             project_id: Project identifier
             include_source: Include inference example source code
+            include_notebook: Generate and include Jupyter notebook (Task 6.2)
             output_dir: Custom output directory (optional)
             
         Returns:
@@ -128,6 +134,12 @@ class ExportBundler:
                 example_content = self.generate_inference_example(metadata)
                 example_path.write_text(example_content)
             
+            # Generate Jupyter notebook (Task 6.2)
+            if include_notebook:
+                notebook_path = self._generate_or_copy_notebook(
+                    run_id, project_id, temp_dir
+                )
+            
             # Create ZIP
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 for file in temp_dir.rglob('*'):
@@ -141,6 +153,56 @@ class ExportBundler:
                 shutil.rmtree(temp_dir)
         
         return str(zip_path)
+    
+    def _generate_or_copy_notebook(
+        self,
+        run_id: str,
+        project_id: str,
+        dest_dir: Path
+    ) -> Optional[Path]:
+        """
+        Generate or copy Jupyter notebook to destination directory.
+        
+        Args:
+            run_id: Run identifier
+            project_id: Project identifier
+            dest_dir: Destination directory
+            
+        Returns:
+            Path to notebook file or None if generation fails
+        """
+        # Check if notebook already exists in run directory
+        run_dir = self.base_dir / project_id / "runs" / run_id
+        existing_notebook = run_dir / "notebook.ipynb"
+        
+        dest_notebook = dest_dir / "notebook.ipynb"
+        
+        if existing_notebook.exists():
+            # Copy existing notebook
+            shutil.copy2(existing_notebook, dest_notebook)
+            return dest_notebook
+        else:
+            # Generate notebook on-the-fly (Task 6.2)
+            try:
+                from .notebook_generator import NotebookGenerator
+                
+                generator = NotebookGenerator(
+                    base_dir=str(self.base_dir),
+                    emit_event=self.emit_event
+                )
+                
+                # Generate notebook directly to temp directory
+                notebook_path = generator.generate_notebook(
+                    project_id=project_id,
+                    run_id=run_id,
+                    output_path=str(dest_notebook)
+                )
+                
+                return dest_notebook
+            except Exception as e:
+                # If notebook generation fails, continue without it
+                print(f"Warning: Could not generate notebook: {e}")
+                return None
     
     def generate_readme(self, metadata: ModelMetadata) -> str:
         """
@@ -214,6 +276,7 @@ See `inference_example.py` for a complete working example.
 - **model.joblib**: Complete trained pipeline (includes preprocessing)
 - **metadata.json**: Full model metadata and configuration
 - **report.json**: Comprehensive training report
+- **notebook.ipynb**: Jupyter notebook with reproducible pipeline
 - **README.md**: This file
 - **requirements.txt**: Python dependencies
 - **inference_example.py**: Working code example
@@ -446,6 +509,7 @@ if __name__ == "__main__":
                 "model.joblib",
                 "metadata.json",
                 "report.json",
+                "notebook.ipynb",
                 "README.md",
                 "requirements.txt",
                 "inference_example.py",
