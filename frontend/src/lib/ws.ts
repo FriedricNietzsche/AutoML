@@ -1,13 +1,30 @@
-import { parseEventMessage, EventMessage, EventType } from "./types";
+export type ConnectionStatus = 'idle' | 'connecting' | 'open' | 'closed' | 'error';
 
-type ConnectionStatus = "idle" | "connecting" | "open" | "closed" | "error";
+export interface StageInfo {
+  id?: string;
+  index?: number;
+  status?: string;
+}
 
-export type WSClientOptions = {
+export interface EventEnvelope {
+  v?: number;
+  type?: string;
+  project_id?: string;
+  seq?: number;
+  ts?: number;
+  stage?: StageInfo;
+  event?: {
+    name?: string;
+    payload?: unknown;
+  };
+}
+
+type WSClientOptions = {
   projectId: string;
   baseUrl?: string; // e.g. ws://localhost:8000
   retryDelaysMs?: number[];
   onStatusChange?: (status: ConnectionStatus) => void;
-  onEvent?: (event: EventMessage) => void;
+  onEvent?: (event: EventEnvelope) => void;
   onError?: (err: unknown) => void;
 };
 
@@ -18,8 +35,23 @@ export type WSClient = {
 
 const defaultRetry = [500, 1000, 2000, 5000];
 
+const resolveBaseUrl = () => {
+  // Allow override via env (set VITE_WS_BASE or VITE_BACKEND_WS_BASE)
+  const envBase =
+    (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_WS_BASE) ||
+    (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_BACKEND_WS_BASE);
+  if (envBase) return envBase as string;
+
+  // Dev fallback: assume backend on 8000 when frontend runs on 5173.
+  if (typeof window !== 'undefined') {
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    return `${proto}://${window.location.hostname}:8000`;
+  }
+  return 'ws://localhost:8000';
+};
+
 const makeUrl = (baseUrl: string, projectId: string) => {
-  const trimmed = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
+  const trimmed = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
   return `${trimmed}/ws/projects/${projectId}`;
 };
 
@@ -37,26 +69,22 @@ export function createWebSocketClient(opts: WSClientOptions): WSClient {
   let closed = false;
   let attempt = 0;
 
-  const url =
-    baseUrl ??
-    (typeof window !== "undefined"
-      ? `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}`
-      : "ws://localhost:8000");
+  const url = baseUrl ?? resolveBaseUrl();
 
   const fullUrl = makeUrl(url, projectId);
 
   const connect = () => {
-    onStatusChange?.("connecting");
+    onStatusChange?.('connecting');
     socket = new WebSocket(fullUrl);
 
     socket.onopen = () => {
       attempt = 0;
-      onStatusChange?.("open");
+      onStatusChange?.('open');
     };
 
     socket.onmessage = (event: MessageEvent<string>) => {
       try {
-        const parsed = parseEventMessage(JSON.parse(event.data));
+        const parsed = JSON.parse(event.data) as EventEnvelope;
         onEvent?.(parsed);
       } catch (err) {
         onError?.(err);
@@ -64,12 +92,12 @@ export function createWebSocketClient(opts: WSClientOptions): WSClient {
     };
 
     socket.onerror = (err) => {
-      onStatusChange?.("error");
+      onStatusChange?.('error');
       onError?.(err);
     };
 
     socket.onclose = () => {
-      onStatusChange?.("closed");
+      onStatusChange?.('closed');
       if (!closed) {
         const delay = retryDelaysMs[Math.min(attempt, retryDelaysMs.length - 1)];
         attempt += 1;
@@ -96,6 +124,6 @@ export function createWebSocketClient(opts: WSClientOptions): WSClient {
   return { send, close };
 }
 
-export function isHello(event: EventMessage) {
-  return event.event.name === EventType.HELLO || event.type === "HELLO";
+export function isHello(event: EventEnvelope) {
+  return event.event?.name === 'HELLO' || event.type === 'HELLO';
 }

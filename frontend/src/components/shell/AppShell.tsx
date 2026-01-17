@@ -15,11 +15,13 @@ import { useResizablePanels } from '../../lib/useResizablePanels';
 import { useKeyboardShortcuts } from '../../lib/useKeyboardShortcuts';
 import { initialFileSystem } from '../../lib/mockData';
 import type { FileSystemNode } from '../../lib/types';
+import { resolveHttpBase, joinUrl } from '../../lib/api';
 import { usePipelineRunner } from '../../lib/usePipelineRunner';
 import { useRouter } from '../../router/router';
 import type { BuildSession, ChatMessage } from '../../lib/buildSession';
 import { useTheme } from '../../lib/theme';
 import { FolderOpen, PanelLeftOpen, PanelRightOpen } from 'lucide-react';
+import { useProjectStore } from '../../store/projectStore';
 
 const nowTs = () => Date.now();
 
@@ -133,6 +135,26 @@ export default function AppShell() {
 
   // VFS State (persisted)
   const [files, setFiles] = useLocalStorageState<FileSystemNode[]>('vfs.files', initialFileSystem, { defer: true });
+
+  // Backend WebSocket connection (Task 1.4)
+  const projectId = 'demo-project';
+  const wsBase =
+    (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_WS_BASE) ||
+    (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_BACKEND_WS_BASE) ||
+    undefined;
+  const apiBase = useMemo(() => resolveHttpBase(wsBase), [wsBase]);
+
+  const { connectionStatus, lastEvent, connect: connectProject, hydrate } = useProjectStore((state) => ({
+    connectionStatus: state.connectionStatus,
+    lastEvent: state.lastEvent,
+    connect: state.connect,
+    hydrate: state.hydrate,
+  }));
+
+  useEffect(() => {
+    connectProject({ projectId, wsBase });
+    hydrate();
+  }, [connectProject, hydrate, projectId, wsBase]);
 
   // (VFS helpers are hoisted outside the component to keep updateFileContent stable)
   
@@ -257,6 +279,32 @@ export default function AppShell() {
     return findNode(files) || '';
   }, [files]);
 
+  const appendWsLog = (label: string, payload?: string) => {
+    const time = new Date().toISOString().split('T')[1].slice(0, 8);
+    const suffix = payload ? ` ${payload}` : '';
+    updateFileContent('/logs/training.log', (prev) => (prev || '') + `[${time}] [WS] ${label}${suffix}\n`);
+  };
+
+  const [pinging, setPinging] = useState(false);
+  const pingBackend = useCallback(async () => {
+    const target = joinUrl(apiBase, `/api/test/emit/${projectId}`);
+    appendWsLog('PING', target);
+    setPinging(true);
+    try {
+      const res = await fetch(target, { method: 'POST' });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        appendWsLog('PING_FAIL', `${res.status} ${res.statusText}`);
+        return;
+      }
+      appendWsLog('PING_OK', JSON.stringify(json));
+    } catch (err) {
+      appendWsLog('PING_FAIL', err instanceof Error ? err.message : String(err));
+    } finally {
+      setPinging(false);
+    }
+  }, [apiBase, appendWsLog, projectId]);
+
   const isBuildReady = !!session && session.status === 'ready';
 
   const patchSession = (patch: Partial<BuildSession>) => {
@@ -275,6 +323,14 @@ export default function AppShell() {
     const time = new Date().toISOString().split('T')[1].slice(0, 8);
     updateFileContent('/logs/training.log', (prev) => (prev || '') + `[${time}] [AI] ${text}\n`);
   };
+
+  // Log backend WebSocket events for visibility
+  useEffect(() => {
+    if (!lastEvent) return;
+    const tag = lastEvent.event?.name ?? lastEvent.type ?? 'EVENT';
+    const payloadPreview = lastEvent.event?.payload ? JSON.stringify(lastEvent.event.payload).slice(0, 300) : '';
+    appendWsLog(tag, payloadPreview);
+  }, [lastEvent]);
 
   const handleSendChangeRequest = (text: string) => {
     if (!text.trim()) return;
@@ -494,6 +550,9 @@ export default function AppShell() {
         onExportModel={handleExportModel}
         isDark={isDark}
         onToggleTheme={toggleTheme}
+        connectionStatus={connectionStatus}
+        onPingBackend={pingBackend}
+        isPinging={pinging}
       />
 
       <div ref={containerRef} className="flex-1 flex overflow-hidden">

@@ -9,6 +9,7 @@ import logging
 
 from ..events.bus import event_bus
 from ..events.schema import EventType, StageID, StageStatus
+from ..orchestrator.conductor import conductor
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +47,8 @@ class ConnectionManager:
         # Send HELLO message
         await self._send_hello(websocket, project_id)
         
-        # Send initial STAGE_STATUS
-        await self._send_initial_stage_status(websocket, project_id)
+        # Send initial STAGE_STATUS via conductor (goes through the bus)
+        await conductor.emit_current_status(project_id)
     
     async def disconnect(self, websocket: WebSocket, project_id: str) -> None:
         """
@@ -97,23 +98,6 @@ class ConnectionManager:
             message_type="HELLO",
         )
         await self._send_to_socket(websocket, hello_event, project_id=project_id)
-    
-    async def _send_initial_stage_status(self, websocket: WebSocket, project_id: str) -> None:
-        """Send initial stage status on connection."""
-        # TODO: In future, fetch actual stage from conductor/database
-        # For now, send a default initial state
-        stage_event = event_bus.make_envelope(
-            project_id=project_id,
-            event_name=EventType.STAGE_STATUS,
-            payload={
-                "stage_id": StageID.PARSE_INTENT.value,
-                "status": StageStatus.PENDING.value,
-                "message": "Waiting for user prompt"
-            },
-            stage_id=StageID.PARSE_INTENT,
-            stage_status=StageStatus.PENDING,
-        )
-        await self._send_to_socket(websocket, stage_event, project_id=project_id)
     
     def get_connection_count(self, project_id: str) -> int:
         """Get the number of active connections for a project."""

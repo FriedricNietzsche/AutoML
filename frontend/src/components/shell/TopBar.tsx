@@ -1,4 +1,5 @@
-import { CheckCircle2, Database, Download, Loader2, Lock, Moon, Play, Sun } from 'lucide-react';
+import { CheckCircle2, Database, Download, Loader2, Lock, Moon, Play, Sun, Wifi } from 'lucide-react';
+import type { ConnectionStatus } from '../../lib/ws';
 
 interface TopBarProps {
   isBuildReady: boolean;
@@ -8,6 +9,9 @@ interface TopBarProps {
   onExportModel: () => void;
   isDark: boolean;
   onToggleTheme: () => void;
+  connectionStatus?: ConnectionStatus;
+  onPingBackend?: () => void;
+  isPinging?: boolean;
 }
 
 export default function TopBar({
@@ -18,8 +22,20 @@ export default function TopBar({
   onExportModel,
   isDark,
   onToggleTheme,
+  connectionStatus = 'idle',
+  onPingBackend,
+  isPinging = false,
 }: TopBarProps) {
   const runDisabled = !isBuildReady || isPipelineRunning;
+
+  const statusStyle =
+    connectionStatus === 'open'
+      ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
+      : connectionStatus === 'connecting'
+      ? 'bg-amber-100 text-amber-800 border-amber-200'
+      : connectionStatus === 'error'
+      ? 'bg-red-100 text-red-800 border-red-200'
+      : 'bg-replit-surface text-replit-textMuted border-replit-border';
 
   return (
     <header className="h-12 bg-replit-surface border-b border-replit-border flex items-center justify-between px-4 shrink-0">
@@ -36,6 +52,42 @@ export default function TopBar({
 
       {/* Right: Actions */}
       <div className="flex items-center gap-2">
+        <div
+          className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-2 ${statusStyle}`}
+          title="Backend WebSocket status"
+        >
+          <span
+            className={`w-2 h-2 rounded-full ${
+              connectionStatus === 'open'
+                ? 'bg-emerald-500'
+                : connectionStatus === 'connecting'
+                ? 'bg-amber-500'
+                : connectionStatus === 'error'
+                ? 'bg-red-500'
+                : 'bg-replit-textMuted'
+            }`}
+          />
+          <span className="hidden sm:inline">WS</span>
+          <span className="font-mono text-[11px] uppercase">{connectionStatus}</span>
+        </div>
+
+        {onPingBackend && (
+          <button
+            onClick={onPingBackend}
+            disabled={isPinging}
+            className={
+              'px-2.5 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-2 ' +
+              (isPinging
+                ? 'border-replit-border bg-replit-surface text-replit-textMuted cursor-wait'
+                : 'border-replit-border bg-replit-surface hover:bg-replit-surfaceHover')
+            }
+            aria-label="Send a ping to the backend"
+          >
+            <Wifi className="w-4 h-4" />
+            <span className="hidden sm:inline">{isPinging ? 'Pinging…' : 'Ping'}</span>
+          </button>
+        )}
+
         {/* Theme */}
         <button
           onClick={onToggleTheme}

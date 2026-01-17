@@ -86,7 +86,7 @@ function computeMetricsFromConfusion(mat: number[][]) {
   };
 }
 
-function buildCurve(kind: 'pr' | 'roc', seed: number): CurvePt[] {
+function buildCurve(kind: 'pr' | 'roc'): CurvePt[] {
   const pts: CurvePt[] = [];
   const n = 60;
   for (let i = 0; i < n; i += 1) {
@@ -137,11 +137,11 @@ export default function EvaluationViz({ timeMs, phaseProgress, seed, reducedMoti
     const prCurveFull =
       curve?.kind === 'pr'
         ? curve.points
-        : buildCurve('pr', seed + confusionFinal.length * 77);
+        : buildCurve('pr');
     const rocCurveFull =
       curve?.kind === 'roc'
         ? curve.points
-        : buildCurve('roc', seed + confusionFinal.length * 91);
+        : buildCurve('roc');
 
     const auprc = computeAuc(prCurveFull);
     const auroc = computeAuc(rocCurveFull);
