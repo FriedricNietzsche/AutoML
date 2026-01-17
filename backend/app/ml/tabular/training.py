@@ -38,6 +38,9 @@ from .visualization import (
     generate_feature_importance_plot,
     generate_training_curves,
 )
+from .model_registry import ModelRegistry, create_metadata_from_training
+from .leaderboard import LeaderboardManager
+from .report_generator import ReportGenerator
 
 
 # ============================================================================
@@ -136,6 +139,7 @@ class TrainingRunner:
     def __init__(
         self,
         emit_event: Callable[[str, Dict], None],
+        project_id: str = "default_project",
         test_size: float = 0.2,
         val_size: float = 0.1,
         random_state: int = 42,
@@ -145,14 +149,21 @@ class TrainingRunner:
         
         Args:
             emit_event: Callback function to emit events (event_name, payload_dict)
+            project_id: Project identifier for model registry
             test_size: Fraction of data for test set
             val_size: Fraction of remaining data for validation
             random_state: Random seed for reproducibility
         """
         self.emit = emit_event
+        self.project_id = project_id
         self.test_size = test_size
         self.val_size = val_size
         self.random_state = random_state
+        
+        # Task 5.3: Initialize registry, leaderboard, and report generator
+        self.registry = ModelRegistry()
+        self.leaderboard = LeaderboardManager()
+        self.report_gen = ReportGenerator()
         
         # Training state
         self.current_run_id = None
@@ -226,6 +237,77 @@ class TrainingRunner:
                 output_path, history
             )
             
+            # Calculate training duration
+            training_duration = time.time() - self.start_time
+            
+            # Task 5.3: Save model with metadata to registry
+            metadata = create_metadata_from_training(
+                run_id=self.current_run_id,
+                project_id=self.project_id,
+                model_id=model_id,
+                model_family="XGBoost",
+                task_type=task_type,
+                metrics=metrics_dict["metrics_dict"],
+                primary_metric_name=metrics_dict["primary_metric_name"],
+                hyperparameters={
+                    "n_estimators": n_estimators,
+                    "max_depth": max_depth,
+                    "learning_rate": learning_rate
+                },
+                training_config={
+                    "test_size": self.test_size,
+                    "val_size": self.val_size,
+                    "random_state": self.random_state,
+                    "target_column": target_column
+                },
+                artifact_paths=artifact_paths,
+                n_train_samples=len(X_train),
+                n_val_samples=len(X_val),
+                n_test_samples=len(X_test),
+                n_features=X_train.shape[1],
+                training_duration_seconds=training_duration
+            )
+            
+            # Save to registry
+            self.registry.save_model_with_metadata(
+                self.current_run_id,
+                self.project_id,
+                model,
+                metadata
+            )
+            
+            # Task 5.3: Generate comprehensive report
+            report_path = self.report_gen.generate_report_json(
+                self.current_run_id,
+                self.project_id,
+                metadata
+            )
+            
+            # Task 5.3: Update leaderboard
+            self.leaderboard.add_run(self.project_id, metadata)
+            
+            # Task 5.3: Emit LEADERBOARD_UPDATED event
+            leaderboard_entries = self.leaderboard.get_leaderboard(
+                self.project_id,
+                top_n=10
+            )
+            self.leaderboard.emit_leaderboard_event(
+                self.emit,
+                leaderboard_entries,
+                metadata.primary_metric_name
+            )
+            
+            # Task 5.3: Check if this is the best model
+            best_run = self.leaderboard.get_best_run(self.project_id)
+            if best_run and best_run.run_id == self.current_run_id:
+                self.leaderboard.emit_best_model_event(
+                    self.emit,
+                    self.current_run_id,
+                    model_id,
+                    metadata.primary_metric_name,
+                    metadata.primary_metric_value
+                )
+            
             # Emit TRAIN_RUN_FINISHED
             primary_metric_name = metrics_dict["primary_metric_name"]
             primary_metric_value = metrics_dict["metrics_dict"][primary_metric_name.replace("_", "")]
@@ -249,6 +331,8 @@ class TrainingRunner:
                 "model_path": str(output_path / "model.joblib"),
                 "metrics": metrics_dict,
                 "artifacts": artifact_paths,
+                "report_path": report_path,
+                "metadata": metadata,
             }
             
         except Exception as e:
