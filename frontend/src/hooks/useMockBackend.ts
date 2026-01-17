@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-<<<<<<< Updated upstream
-import type { BackendEvent, StepId } from '../mock/backendEventTypes';
-=======
 import type { MockWSEnvelope } from '../mock/backendEventTypes';
 import type { StageID } from '../lib/contract';
->>>>>>> Stashed changes
 import { createMockAutoMLStream, type MockStreamOptions } from '../mock/mockBackendStream';
 
 export interface BackendDriverState {
@@ -64,13 +60,8 @@ export function useMockBackend(options?: MockStreamOptions) {
   const [isRunning, setIsRunning] = useState(false);
 
   const apiRef = useRef<{
-<<<<<<< Updated upstream
-    confirmStep: (stepId: StepId) => void;
-    selectPlan: (stepId: StepId, planId: string) => void;
-=======
     confirmStep: (_stepId: StageID) => void;
     selectPlan: (_stepId: StageID, _planId: string) => void;
->>>>>>> Stashed changes
     pause: () => void;
     resume: () => void;
     stop: () => void;
