@@ -22,6 +22,7 @@
 
     /* Accent: vivid but professional */
     --replit-accent: 37 99 235;
+    --replit-accent-rgb: 37, 99, 235;
     --replit-accent-hover: 29 78 216;
 
     --replit-success: 22 163 74;
@@ -39,6 +40,7 @@
     --replit-text-muted: 148 163 184;
 
     --replit-accent: 96 165 250;
+    --replit-accent-rgb: 96, 165, 250;
     --replit-accent-hover: 59 130 246;
 
     --replit-success: 34 197 94;
