@@ -65,6 +65,11 @@ function toMissingness(columns: string[]) {
   }));
 }
 
+function generateImagePixelData() {
+  // Return placeholder - actual image loading happens client-side in the component
+  return { width: 20, height: 20, pixels: [], needsClientLoad: true };
+}
+
 function buildArtifacts(scenario: ScenarioData) {
   const task = {
     task: scenario.task,
@@ -129,6 +134,13 @@ export async function* createMockAutoMLStream(options: MockStreamOptions = {}): 
     ts: now(),
   });
 
+  const thinkingEvent = (step: StepId, messages: string[]): BackendEvent => ({
+    type: 'MODEL_THINKING',
+    step,
+    messages,
+    ts: now(),
+  });
+
   const artifacts = buildArtifacts(scenario);
 
   yield { type: 'LOSS_SURFACE_SPEC', spec: surfaceSpec, ts: now() };
@@ -144,6 +156,11 @@ export async function* createMockAutoMLStream(options: MockStreamOptions = {}): 
 
   // S0 Task Spec
   yield stepEvent('S0', 'running', 0.1, 'Interpreting task');
+  yield thinkingEvent('S0', ['Reading task spec and inferring target + metric priorities']);
+  await delay(320);
+  yield thinkingEvent('S0', ['Validating objective constraints (latency, interpretability, accuracy)']);
+  await delay(320);
+  yield thinkingEvent('S0', ['Preparing dataset search query from task description']);
   yield {
     type: 'PLAN_PROPOSED',
     step: 'S0',
@@ -164,7 +181,33 @@ export async function* createMockAutoMLStream(options: MockStreamOptions = {}): 
   await delay(300);
 
   // S1 Data Source
-  yield stepEvent('S1', 'running', 0.1, 'Searching datasets');
+  yield stepEvent('S1', 'running', 0.05, 'Searching datasets');
+  yield thinkingEvent('S1', ['Initializing data source discovery...']);
+  await delay(180);
+  yield thinkingEvent('S1', ['Scanning local filesystem for cached datasets']);
+  await delay(160);
+  yield thinkingEvent('S1', ['Checking remote repository indices']);
+  await delay(140);
+  yield thinkingEvent('S1', ['Analyzing task requirements to filter candidates']);
+  await delay(170);
+  yield thinkingEvent('S1', ['Inferring task type from user prompt: classification detected']);
+  await delay(150);
+  yield thinkingEvent('S1', ['Identifying target column candidates based on naming patterns']);
+  yield stepEvent('S1', 'running', 0.18, 'Checking dataset compatibility');
+  await delay(160);
+  yield thinkingEvent('S1', ['Cross-referencing dataset schemas with task constraints']);
+  await delay(140);
+  yield thinkingEvent('S1', ['Validating license compatibility (commercial use allowed)']);
+  await delay(170);
+  yield thinkingEvent('S1', ['Computing relevance scores: size, freshness, column overlap']);
+  await delay(150);
+  yield thinkingEvent('S1', ['Filtering out datasets with insufficient row counts']);
+  await delay(160);
+  yield thinkingEvent('S1', ['Ranking by schema quality and data completeness']);
+  await delay(140);
+  yield thinkingEvent('S1', ['Top match found: Telecom Churn (68MB, 24 cols, CC BY 4.0)']);
+  yield stepEvent('S1', 'running', 0.32, 'Fetching dataset metadata');
+  await delay(150);
   yield {
     type: 'DATASET_SEARCH_RESULTS',
     query: 'customer churn',
@@ -175,7 +218,49 @@ export async function* createMockAutoMLStream(options: MockStreamOptions = {}): 
     ],
     ts: now(),
   };
+  yield thinkingEvent('S1', ['Establishing connection to data source endpoint']);
+  await delay(160);
+  yield thinkingEvent('S1', ['Requesting dataset manifest and checksums']);
+  await delay(170);
+  yield thinkingEvent('S1', ['Verifying data integrity: SHA-256 checksum validation']);
+  await delay(140);
+  yield thinkingEvent('S1', ['Beginning incremental download (streaming mode)']);
+  yield stepEvent('S1', 'running', 0.55, 'Downloading dataset');
+  await delay(150);
+  yield thinkingEvent('S1', ['Downloaded 12% (8.2MB of 68MB)']);
+  await delay(160);
+  yield thinkingEvent('S1', ['Downloaded 35% (23.8MB of 68MB)']);
+  await delay(140);
+  yield thinkingEvent('S1', ['Downloaded 61% (41.5MB of 68MB)']);
+  await delay(170);
+  yield thinkingEvent('S1', ['Downloaded 89% (60.5MB of 68MB)']);
+  await delay(150);
+  yield thinkingEvent('S1', ['Download complete, verifying payload integrity']);
+  await delay(160);
+  yield thinkingEvent('S1', ['Decompressing archive (gzip format)']);
+  await delay(140);
+  yield thinkingEvent('S1', ['Parsing CSV headers and detecting delimiter']);
+  await delay(170);
+  yield thinkingEvent('S1', ['Inferring column types from first 1000 rows']);
+  await delay(150);
+  yield thinkingEvent('S1', ['Type inference complete: 12 numeric, 8 categorical, 4 text']);
+  await delay(160);
+  yield thinkingEvent('S1', ['Coercing values: numeric precision, date parsing, category encoding']);
+  await delay(140);
+  yield thinkingEvent('S1', ['Scanning for null values and missing data patterns']);
+  await delay(170);
+  yield thinkingEvent('S1', ['Computing basic statistics: min, max, mean, std per column']);
+  yield stepEvent('S1', 'running', 0.78, 'Validating dataset');
+  await delay(150);
+  yield thinkingEvent('S1', ['Checking for duplicate rows: 0 duplicates detected']);
+  await delay(160);
+  yield thinkingEvent('S1', ['Validating target column distribution: balanced classes']);
+  await delay(140);
+  yield thinkingEvent('S1', ['Confirming schema compatibility with AutoML requirements']);
+  await delay(170);
   yield { type: 'DATASET_INGESTED', datasetId: 'ds_a', rows: 70430, columns: 24, ts: now() };
+  yield thinkingEvent('S1', ['Dataset locked: 70,430 rows, 24 columns, ready for profiling']);
+  await delay(150);
   yield stepEvent('S1', 'complete', 1);
   await delay(300);
 
@@ -184,6 +269,39 @@ export async function* createMockAutoMLStream(options: MockStreamOptions = {}): 
   yield { type: 'PROFILE_PROGRESS', stage: 'Scanning columns', progress: 0.4, ts: now() };
   yield { type: 'PROFILE_PROGRESS', stage: 'Computing missingness', progress: 0.8, ts: now() };
   const missingness = toMissingness(['tenure', 'monthly_charges', 'contract_type', 'payment_method', 'churn']);
+  
+  // Use image data for scenario B, tabular for others
+  const useImageData = scenarioId === 'B';
+  
+  if (useImageData) {
+    const imageData = generateImagePixelData();
+    yield {
+      type: 'DATASET_PREVIEW',
+      dataType: 'image',
+      rows: [],
+      columns: [],
+      imageData,
+      ts: now(),
+    };
+  } else {
+    yield {
+      type: 'DATASET_PREVIEW',
+      dataType: 'tabular',
+      rows: [
+        [23.5, 89.2, 1.0, 0.0, 12.3, 0.1],
+        [45.1, 102.7, 0.0, 1.0, 24.6, 0.0],
+        [12.8, 56.4, 1.0, 1.0, 8.9, 0.1],
+        [67.3, 124.5, 0.0, 0.0, 31.2, 0.0],
+        [34.9, 95.8, 1.0, 0.0, 18.7, 0.1],
+        [89.2, 143.1, 0.0, 1.0, 42.5, 0.0],
+        [15.6, 67.3, 1.0, 1.0, 11.4, 0.1],
+        [52.4, 108.9, 0.0, 0.0, 27.8, 0.0],
+      ],
+      columns: ['tenure', 'monthly_charges', 'contract_type', 'payment_method', 'total_charges', 'churn'],
+      ts: now(),
+    };
+  }
+  
   yield { type: 'PROFILE_SUMMARY', rows: 70430, columns: 24, missingness, ts: now() };
   yield {
     type: 'METRIC_TABLE',

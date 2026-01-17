@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { BackendEvent, LossSurfaceSpec } from './backendEventTypes';
+import type { BackendEvent, LossSurfaceSpec, StepId } from './backendEventTypes';
 import { createMockAutoMLStream } from './mockBackendStream';
 import type { ScenarioId } from './scenarios';
 import type { EmbeddingPoint, GradientPoint, LossPoint, MetricPoint, ResidualPoint } from './scenarios/scenarioTypes';
@@ -17,6 +17,8 @@ export interface MetricsState {
   pipelineGraph: { nodes: Array<{ id: string; label: string }>; edges: Array<{ from: string; to: string }> } | null;
   leaderboard: Array<{ rank: number; model: string; metricName: string; metricValue: number; params: Record<string, unknown> }>;
   metricsSummary: { accuracy?: number; f1?: number; rmse?: number };
+  thinkingByStep: Partial<Record<StepId, string[]>>;
+  datasetPreview: { rows: number[][]; columns: string[]; dataType: 'tabular' | 'image'; imageData?: { width: number; height: number; pixels: Array<{ r: number; g: number; b: number }>; needsClientLoad?: boolean } } | null;
 }
 
 const emptyMetrics: MetricsState = {
@@ -32,6 +34,8 @@ const emptyMetrics: MetricsState = {
   pipelineGraph: null,
   leaderboard: [],
   metricsSummary: {},
+  thinkingByStep: {},
+  datasetPreview: null,
 };
 
 export function useMockAutoMLStream({ scenarioId, seed, enabled }: { scenarioId: ScenarioId; seed?: number; enabled?: boolean }) {
@@ -97,6 +101,12 @@ export function useMockAutoMLStream({ scenarioId, seed, enabled }: { scenarioId:
 
 function reduceMetricsState(prev: MetricsState, event: BackendEvent): MetricsState {
   switch (event.type) {
+    case 'MODEL_THINKING': {
+      const key = event.step;
+      const existing = prev.thinkingByStep[key] ?? [];
+      const next = [...existing, ...event.messages].slice(-200);
+      return { ...prev, thinkingByStep: { ...prev.thinkingByStep, [key]: next } };
+    }
     case 'METRIC_SCALAR': {
       if (event.metric === 'train_loss' || event.metric === 'val_loss') {
         const existing = prev.lossSeries.find((p) => p.epoch === event.epoch);
@@ -141,6 +151,8 @@ function reduceMetricsState(prev: MetricsState, event: BackendEvent): MetricsSta
 
       return prev;
     }
+    case 'DATASET_PREVIEW':
+      return { ...prev, datasetPreview: { rows: event.rows, columns: event.columns, dataType: event.dataType, imageData: event.imageData } };
     case 'METRIC_TABLE':
       if (event.table === 'confusion') return { ...prev, confusionTable: event.data };
       return prev;
