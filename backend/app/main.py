@@ -30,6 +30,7 @@ app.add_middleware(
 from app.ws.router import router as ws_router
 from app.api.test import router as test_router
 from app.api.stages import router as stages_router
+from app.api.assets import router as assets_router
 
 # Include WebSocket router
 app.include_router(ws_router)
@@ -39,6 +40,9 @@ app.include_router(test_router)
 
 # Include stage state router
 app.include_router(stages_router)
+
+# Include assets router
+app.include_router(assets_router)
 
 
 @app.get("/health")
