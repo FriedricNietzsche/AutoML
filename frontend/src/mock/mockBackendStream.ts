@@ -1,11 +1,37 @@
-import type { BackendEvent, LossSurfaceSpec, StepId } from './backendEventTypes';
+import type { BackendEvent, LossSurfaceSpec, MockWSEnvelope, StepId } from './backendEventTypes';
 import { MOCK_SCENARIOS, type ScenarioId, type ScenarioData } from './scenarios';
+import {
+  STAGE_ORDER,
+  stageIndex,
+  type ArtifactAddedPayload,
+  type EventType,
+  type StageID,
+  type StageStatus,
+} from '../lib/contract';
 
 export interface MockStreamOptions {
   scenarioId?: ScenarioId;
   seed?: number;
   speed?: number; // >1 faster, <1 slower
+  projectId?: string;
 }
+
+const STEP_TO_STAGE: Record<StepId, StageID> = {
+  S0: 'PARSE_INTENT',
+  S1: 'DATA_SOURCE',
+  S2: 'PROFILE_DATA',
+  S3: 'PREPROCESS',
+  S4: 'MODEL_SELECT',
+  S5: 'TRAIN',
+  S6: 'REVIEW_EDIT',
+  S7: 'EXPORT',
+};
+
+const stageStatusFromStep = (status: 'waiting' | 'running' | 'complete'): StageStatus => {
+  if (status === 'waiting') return 'WAITING_CONFIRMATION';
+  if (status === 'complete') return 'COMPLETED';
+  return 'IN_PROGRESS';
+};
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -117,7 +143,7 @@ function buildArtifacts(scenario: ScenarioData) {
   };
 }
 
-export async function* createMockAutoMLStream(options: MockStreamOptions = {}): AsyncGenerator<BackendEvent> {
+async function* createLegacyMockEventStream(options: MockStreamOptions = {}): AsyncGenerator<BackendEvent> {
   const scenarioId = options.scenarioId ?? 'A';
   // CHANGE SCENARIO HERE: scenarioId controls which mock ML run is streamed.
   const scenario = MOCK_SCENARIOS[scenarioId].build(options.seed ?? 1337);
@@ -411,6 +437,367 @@ export async function* createMockAutoMLStream(options: MockStreamOptions = {}): 
   yield stepEvent('S7', 'running', 0.7, 'Exporting');
   yield { type: 'EXPORT_READY', files: ['artifacts/model.joblib', 'artifacts/model_card.md'], ts: now() };
   yield stepEvent('S7', 'complete', 1);
+}
+
+const buildEnvelope = (params: {
+  projectId: string;
+  seq: number;
+  ts: number;
+  stageId: StageID;
+  stageStatus: StageStatus;
+  name: EventType;
+  payload: unknown;
+}): MockWSEnvelope => {
+  const { projectId, seq, ts, stageId, stageStatus, name, payload } = params;
+  return {
+    v: 1,
+    type: 'EVENT',
+    project_id: projectId,
+    seq,
+    ts,
+    stage: {
+      id: stageId,
+      index: stageIndex(stageId),
+      status: stageStatus,
+    },
+    event: {
+      name,
+      payload,
+    },
+  };
+};
+
+export async function* createMockAutoMLStream(options: MockStreamOptions = {}): AsyncGenerator<MockWSEnvelope> {
+  const projectId = options.projectId ?? 'demo-project';
+  const legacyStream = createLegacyMockEventStream(options);
+  let seq = 0;
+  let currentStage: StageID = STAGE_ORDER[0].id;
+  const stageStatus = STAGE_ORDER.reduce((acc, stage) => {
+    acc[stage.id] = stage.id === currentStage ? 'IN_PROGRESS' : 'PENDING';
+    return acc;
+  }, {} as Record<StageID, StageStatus>);
+  const runId = `run_${projectId}_main`;
+  const metricCache: Record<string, number> = {};
+
+  for await (const evt of legacyStream) {
+    const envelopes: MockWSEnvelope[] = [];
+    const ts = evt.ts ?? Date.now();
+    const stageId = 'step' in evt ? STEP_TO_STAGE[evt.step as StepId] : currentStage;
+    if (stageId) currentStage = stageId;
+
+    const emit = (name: EventType, payload: unknown, stageOverride?: StageID, statusOverride?: StageStatus) => {
+      const effectiveStage = stageOverride ?? currentStage;
+      const effectiveStatus = statusOverride ?? stageStatus[effectiveStage] ?? 'PENDING';
+      const envelope = buildEnvelope({
+        projectId,
+        seq: seq++,
+        ts,
+        stageId: effectiveStage,
+        stageStatus: effectiveStatus,
+        name,
+        payload,
+      });
+      envelopes.push(envelope);
+    };
+
+    switch (evt.type) {
+      case 'STEP_STATUS': {
+        const stage = STEP_TO_STAGE[evt.step];
+        const status = stageStatusFromStep(evt.status);
+        stageStatus[stage] = status;
+        emit('STAGE_STATUS', { stage_id: stage, status, message: evt.message }, stage, status);
+        if (stage === 'TRAIN' && evt.status === 'running') {
+          emit('TRAIN_RUN_STARTED', {
+            run_id: runId,
+            model_id: 'mock_model',
+            metric_primary: 'accuracy',
+            config: { mock: true },
+          }, stage, status);
+        }
+        if (stage === 'TRAIN' && evt.status === 'complete') {
+          emit('TRAIN_RUN_FINISHED', {
+            run_id: runId,
+            status: 'success',
+            final_metrics: { ...metricCache },
+          }, stage, status);
+        }
+        break;
+      }
+      case 'MODEL_THINKING': {
+        const stage = STEP_TO_STAGE[evt.step];
+        for (const message of evt.messages) {
+          emit('LOG_LINE', { run_id: `stage:${stage}`, level: 'INFO', text: `THINKING: ${message}` }, stage);
+        }
+        break;
+      }
+      case 'PLAN_PROPOSED': {
+        const stage = STEP_TO_STAGE[evt.step];
+        emit('PLAN_PROPOSED', { stage_id: stage, plan_json: { plan_id: evt.planId, variants: evt.variants } }, stage);
+        break;
+      }
+      case 'PLAN_SELECTED': {
+        const stage = STEP_TO_STAGE[evt.step];
+        emit('PLAN_APPROVED', { stage_id: stage }, stage);
+        break;
+      }
+      case 'DATASET_SEARCH_RESULTS': {
+        const datasets = evt.results.map((ds) => ({
+          id: ds.id,
+          name: ds.name,
+          source: ds.license ?? 'mock',
+          desc: `${ds.sizeMB}MB · ${ds.columns} columns`,
+          meta: { license: ds.license, sizeMB: ds.sizeMB, columns: ds.columns },
+        }));
+        emit('DATASET_CANDIDATES', { datasets });
+        break;
+      }
+      case 'DATASET_INGESTED': {
+        emit('DATASET_SELECTED', { dataset_id: evt.datasetId });
+        break;
+      }
+      case 'PROFILE_PROGRESS': {
+        emit('PROFILE_PROGRESS', { phase: evt.stage, pct: evt.progress });
+        break;
+      }
+      case 'DATASET_PREVIEW': {
+        const assetUrl = `mock://dataset_sample/${projectId}/${seq}`;
+        const artifact: ArtifactAddedPayload['artifact'] = {
+          id: `asset_dataset_sample_${seq}`,
+          type: 'dataset_sample',
+          name: 'Dataset sample',
+          url: assetUrl,
+          meta: {
+            kind: 'dataset_sample',
+            data_type: evt.dataType,
+            columns: evt.columns,
+            rows: evt.rows,
+            image_data: evt.imageData,
+          },
+        };
+        emit('ARTIFACT_ADDED', { artifact });
+        emit('DATASET_SAMPLE_READY', { asset_url: assetUrl, columns: evt.columns, n_rows: evt.rows.length });
+        break;
+      }
+      case 'PROFILE_SUMMARY': {
+        const missingAvg =
+          evt.missingness.length > 0
+            ? evt.missingness.reduce((acc, m) => acc + m.missingPct, 0) / evt.missingness.length
+            : 0;
+        emit('PROFILE_SUMMARY', {
+          n_rows: evt.rows,
+          n_cols: evt.columns,
+          missing_pct: missingAvg,
+          types_breakdown: { numeric: Math.max(1, Math.round(evt.columns * 0.4)), categorical: Math.max(1, Math.round(evt.columns * 0.2)) },
+          warnings: [],
+        });
+        break;
+      }
+      case 'METRIC_TABLE': {
+        if (evt.table === 'missingness') {
+          const assetUrl = `mock://missingness_table/${projectId}/${seq}`;
+          const artifact: ArtifactAddedPayload['artifact'] = {
+            id: `asset_missingness_${seq}`,
+            type: 'table',
+            name: 'Missingness table',
+            url: assetUrl,
+            meta: { kind: 'missingness_table', rows: evt.rows, cols: evt.cols, data: evt.data },
+          };
+          emit('ARTIFACT_ADDED', { artifact });
+          emit('MISSINGNESS_TABLE_READY', { asset_url: assetUrl });
+        }
+        if (evt.table === 'confusion') {
+          const assetUrl = `mock://confusion_matrix/${projectId}/${seq}`;
+          const artifact: ArtifactAddedPayload['artifact'] = {
+            id: `asset_confusion_${seq}`,
+            type: 'matrix',
+            name: 'Confusion matrix',
+            url: assetUrl,
+            meta: { kind: 'confusion_matrix', matrix: evt.data, labels: evt.rows },
+          };
+          emit('ARTIFACT_ADDED', { artifact });
+          emit('CONFUSION_MATRIX_READY', { asset_url: assetUrl });
+        }
+        break;
+      }
+      case 'FEATURE_SUMMARY': {
+        const assetUrl = `mock://feature_summary/${projectId}/${seq}`;
+        const artifact: ArtifactAddedPayload['artifact'] = {
+          id: `asset_feature_summary_${seq}`,
+          type: 'summary',
+          name: 'Feature summary',
+          url: assetUrl,
+          meta: { kind: 'feature_summary', totalFeatures: evt.totalFeatures, topFeatures: evt.topFeatures },
+        };
+        emit('ARTIFACT_ADDED', { artifact });
+        break;
+      }
+      case 'PIPELINE_GRAPH': {
+        const assetUrl = `mock://pipeline_graph/${projectId}/${seq}`;
+        const artifact: ArtifactAddedPayload['artifact'] = {
+          id: `asset_pipeline_graph_${seq}`,
+          type: 'graph',
+          name: 'Pipeline graph',
+          url: assetUrl,
+          meta: { kind: 'pipeline_graph', nodes: evt.nodes, edges: evt.edges },
+        };
+        emit('ARTIFACT_ADDED', { artifact });
+        break;
+      }
+      case 'LEADERBOARD_UPDATED': {
+        const rows = evt.entries.map((entry) => ({
+          model: entry.model,
+          params: entry.params,
+          metric: entry.metricValue,
+          runtime_s: 0,
+        }));
+        emit('LEADERBOARD_UPDATED', { rows });
+        break;
+      }
+      case 'TRAIN_PROGRESS': {
+        emit('TRAIN_PROGRESS', {
+          run_id: runId,
+          epoch: evt.epoch,
+          epochs: evt.totalEpochs,
+          step: evt.epoch,
+          steps: evt.totalEpochs,
+          eta_s: Math.max(0, evt.totalEpochs - evt.epoch) * 0.2,
+          phase: 'fit',
+        });
+        break;
+      }
+      case 'METRIC_SCALAR': {
+        const split = evt.split ?? 'train';
+        const name =
+          evt.metric === 'train_loss' || evt.metric === 'val_loss'
+            ? 'loss'
+            : evt.metric;
+        const resolvedSplit =
+          evt.metric === 'train_loss'
+            ? 'train'
+            : evt.metric === 'val_loss'
+              ? 'val'
+              : split;
+        metricCache[name] = evt.value;
+        emit('METRIC_SCALAR', {
+          run_id: runId,
+          name,
+          split: resolvedSplit,
+          step: evt.epoch,
+          value: evt.value,
+        });
+        break;
+      }
+      case 'RESOURCE_STATS': {
+        emit('RESOURCE_STATS', {
+          run_id: runId,
+          cpu_pct: evt.cpuPct,
+          ram_mb: evt.ramMB,
+          gpu_pct: evt.gpuPct,
+          vram_mb: null,
+          step_per_sec: null,
+        });
+        break;
+      }
+      case 'LOG_LINE': {
+        emit('LOG_LINE', { run_id: runId, level: evt.level, text: evt.message });
+        break;
+      }
+      case 'ARTIFACT_WRITTEN': {
+        const assetUrl = `mock://file/${encodeURIComponent(evt.path)}`;
+        const meta: Record<string, unknown> = { kind: 'file', file_path: evt.path, content: evt.content };
+        if (evt.path === 'artifacts/embedding_points.json') {
+          try {
+            meta.kind = 'embedding_points';
+            meta.points = JSON.parse(evt.content);
+          } catch {
+            // ignore parse errors
+          }
+        }
+        if (evt.path === 'artifacts/residuals.json') {
+          try {
+            const parsed = JSON.parse(evt.content) as { points?: unknown };
+            meta.kind = 'residuals';
+            meta.points = parsed.points ?? [];
+          } catch {
+            // ignore parse errors
+          }
+        }
+        if (evt.path === 'artifacts/gradient_path.json') {
+          try {
+            const parsed = JSON.parse(evt.content) as { path?: unknown };
+            meta.kind = 'gradient_path';
+            meta.points = parsed.path ?? [];
+          } catch {
+            // ignore parse errors
+          }
+        }
+        const artifact: ArtifactAddedPayload['artifact'] = {
+          id: `file_${evt.path.replace(/[^\w]+/g, '_')}`,
+          type: 'file',
+          name: evt.path.split('/').pop() ?? evt.path,
+          url: assetUrl,
+          meta,
+        };
+        emit('ARTIFACT_ADDED', { artifact });
+        if (meta.kind === 'residuals') {
+          emit('RESIDUALS_PLOT_READY', { asset_url: assetUrl });
+        }
+        break;
+      }
+      case 'REPORT_READY': {
+        const assetUrl = `mock://report/${projectId}/${seq}`;
+        const artifact: ArtifactAddedPayload['artifact'] = {
+          id: `asset_report_${seq}`,
+          type: 'report',
+          name: 'Report',
+          url: assetUrl,
+          meta: { kind: 'report', summary: evt.summary },
+        };
+        emit('ARTIFACT_ADDED', { artifact });
+        emit('REPORT_READY', { asset_url: assetUrl });
+        break;
+      }
+      case 'EXPORT_READY': {
+        const assetUrl = `mock://export/${projectId}/${seq}`;
+        emit('EXPORT_READY', {
+          asset_url: assetUrl,
+          contents: evt.files,
+          checksum: `mock-${seq}`,
+        });
+        break;
+      }
+      case 'LOSS_SURFACE_SPEC': {
+        const assetUrl = `mock://loss_surface/${projectId}/${seq}`;
+        const artifact: ArtifactAddedPayload['artifact'] = {
+          id: `asset_loss_surface_${seq}`,
+          type: 'viz',
+          name: 'Loss surface',
+          url: assetUrl,
+          meta: { kind: 'loss_surface', spec: evt.spec },
+        };
+        emit('ARTIFACT_ADDED', { artifact }, 'TRAIN');
+        break;
+      }
+      case 'GD_PATH': {
+        const assetUrl = `mock://gradient_path/${projectId}/${seq}`;
+        const artifact: ArtifactAddedPayload['artifact'] = {
+          id: `asset_gradient_path_${seq}`,
+          type: 'viz',
+          name: 'Gradient path',
+          url: assetUrl,
+          meta: { kind: 'gradient_path', points: evt.points },
+        };
+        emit('ARTIFACT_ADDED', { artifact }, 'TRAIN');
+        break;
+      }
+      default:
+        break;
+    }
+
+    for (const envelope of envelopes) {
+      yield envelope;
+    }
+  }
 }
 
 /*

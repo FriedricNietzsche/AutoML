@@ -11,8 +11,10 @@ import TrainingLossVisualizer from './TrainingLossVisualizer';
 import ModelMetricsVisualizer from './ModelMetricsVisualizer';
 import { useMockAutoMLStream } from '../../../mock/useMockAutoMLStream';
 import type { ScenarioId } from '../../../mock/scenarios';
-import type { BackendEvent } from '../../../mock/backendEventTypes';
+import type { MockWSEnvelope } from '../../../mock/backendEventTypes';
+import type { ArtifactAddedPayload, LogLinePayload } from '../../../lib/contract';
 import { SCENARIO_VIZ, type LoaderStepId } from '../../../mock/scenarioVizConfig';
+import { useProjectStore } from '../../../store/projectStore';
 
 interface MetricPoint {
   epoch: number;
@@ -220,12 +222,14 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
     seed,
     enabled: useMockStream && currentStage > 0,
   });
+  const applyProjectEvent = useProjectStore((state) => state.applyEvent);
 
   // Load actual image pixels client-side for image data
   const [loadedImagePixels, setLoadedImagePixels] = useState<Array<{ r: number; g: number; b: number }> | null>(null);
   const [imageAnimStartedAt, setImageAnimStartedAt] = useState<number | null>(null);
   const imageCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const imageOffscreenRef = useRef<HTMLCanvasElement | null>(null);
+  const stage1ScrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const isImage = metricsState.datasetPreview?.dataType === 'image';
@@ -333,7 +337,23 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
     ctx.drawImage(offscreen, 0, 0);
   }, [currentStage, loadedImagePixels, metricsState.datasetPreview?.dataType, metricsState.datasetPreview?.imageData?.needsClientLoad]);
 
-  const stage1Thinking = metricsState.thinkingByStep?.S1 ?? [];
+  const stage1Thinking = metricsState.thinkingByStage?.DATA_SOURCE ?? [];
+
+  // Keep Stage 1 view pinned to the latest streamed message.
+  useEffect(() => {
+    if (currentStage !== 1) return;
+    const el = stage1ScrollRef.current;
+    if (!el) return;
+
+    // Defer until after DOM has painted new content.
+    requestAnimationFrame(() => {
+      try {
+        el.scrollTo({ top: el.scrollHeight, behavior: reducedMotion ? 'auto' : 'smooth' });
+      } catch {
+        el.scrollTop = el.scrollHeight;
+      }
+    });
+  }, [currentStage, reducedMotion, stage1Thinking.length]);
 
   const scenarioConfig = useMemo(() => SCENARIO_VIZ[activeScenario], [activeScenario]);
   
@@ -401,12 +421,26 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
     if (events.length <= processedEventsRef.current) return;
 
     for (let i = processedEventsRef.current; i < events.length; i += 1) {
-      const event = events[i] as BackendEvent;
-      if (event.type === 'ARTIFACT_WRITTEN') {
-        updateFileContentRef.current(event.path, event.content);
+      const event = events[i] as MockWSEnvelope;
+      applyProjectEvent(event);
+      const name = event.event?.name;
+      const payload = event.event?.payload as Record<string, unknown> | undefined;
+
+      if (name === 'ARTIFACT_ADDED') {
+        const artifactPayload = payload as ArtifactAddedPayload | undefined;
+        const artifact = artifactPayload?.artifact;
+        const meta = artifact?.meta as Record<string, unknown> | undefined;
+        const filePath = meta?.file_path as string | undefined;
+        const content = meta?.content as string | undefined;
+        if (filePath && typeof content === 'string') {
+          updateFileContentRef.current(filePath, content);
+        }
       }
-      if (event.type === 'LOG_LINE') {
-        appendLog(updateFileContentRef.current, event.message, event.level);
+
+      if (name === 'LOG_LINE') {
+        const logPayload = payload as LogLinePayload | undefined;
+        if (!logPayload?.text) continue;
+        appendLog(updateFileContentRef.current, logPayload.text, logPayload.level);
       }
     }
 
@@ -798,6 +832,7 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
                             </div>
 
                             <div
+                              ref={stage1ScrollRef}
                               className="flex-1 overflow-auto rounded-lg bg-replit-surface/40 p-6 relative"
                               style={{
                                 WebkitMaskImage:
