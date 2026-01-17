@@ -14,6 +14,8 @@ from typing import Optional, List, Callable
 import logging
 import pandas as pd
 from fastapi import APIRouter, Body, HTTPException, UploadFile, File
+from PIL import Image
+from huggingface_hub import HfApi
 
 from app.events.bus import event_bus
 from app.events.schema import (
@@ -180,6 +182,37 @@ async def upload_dataset(project_id: str, file: UploadFile = File(...)):
     return {"status": "ok", "rows": len(df), "columns": list(df.columns)}
 
 
+@router.get("/hf/search")
+async def search_hf_datasets(query: str, limit: int = 20):
+    """
+    Search Hugging Face datasets by keyword and return only public, allowed-license entries.
+    """
+    token = _hf_token()
+    api = HfApi(token=token)
+    allowed_licenses = {"mit", "apache-2.0", "cc-by-4.0", "cc0-1.0", "cc-by-sa-4.0", "unlicense"}
+    results = []
+    try:
+        for ds in api.list_datasets(search=query, limit=limit):
+            # Skip private/gated
+            if getattr(ds, "private", False) or getattr(ds, "gated", False):
+                continue
+            info = ds.card_data or {}
+            lic_raw = (info.get("license") or "").lower()
+            lic = lic_raw.strip()
+            if lic and lic not in allowed_licenses:
+                continue
+            results.append({"id": ds.id, "license": lic or "unspecified"})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"HF search failed: {e}")
+    if not results:
+        return {
+            "results": [],
+            "count": 0,
+            "message": "No public datasets with allowed licenses found for this query. Try a different keyword or provide a dataset link.",
+        }
+    return {"results": results, "count": len(results)}
+
+
 @router.post("/{project_id}/ingest/hf")
 async def ingest_hf(
     project_id: str,
@@ -233,6 +266,76 @@ async def ingest_hf(
     await _emit_profile(project_id, df, project_dir / "profile")
 
     return {"status": "ok", "rows": len(df), "columns": list(df.columns)}
+
+
+@router.post("/{project_id}/ingest/hf-images")
+async def ingest_hf_images(
+    project_id: str,
+    dataset: str = Body(..., embed=True),
+    split: str = Body("train", embed=True),
+    image_field: str = Body("image", embed=True),
+    label_field: str = Body("label", embed=True),
+    max_images: int = Body(40, embed=True),
+):
+    """
+    Download a small image dataset from Hugging Face and save to images/ subdir for vision training.
+    """
+    try:
+        from datasets import load_dataset  # type: ignore
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"datasets package not available: {e}")
+
+    token = _hf_token()
+    streaming = True
+    try:
+        ds = load_dataset(dataset, split=split, streaming=True, token=token)
+    except Exception:
+        streaming = False
+        try:
+            ds = load_dataset(dataset, split=split, token=token)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to load dataset {dataset}:{split} from HF: {e}")
+
+    project_dir = _project_dir(project_id)
+    images_dir = project_dir / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    saved = 0
+    label_map = {}
+    iterator = ds if streaming else iter(ds)
+    for row in iterator:
+        if saved >= max_images:
+            break
+        img = row[image_field] if isinstance(row, dict) else getattr(row, image_field, None)
+        label = row.get(label_field, "unknown") if isinstance(row, dict) else getattr(row, label_field, "unknown")
+        try:
+            pil_img = img if isinstance(img, Image.Image) else Image.fromarray(img)
+        except Exception:
+            continue
+        fname = images_dir / f"{label}_{saved}.png"
+        pil_img.save(fname)
+        label_map[str(fname.name)] = label
+        saved += 1
+
+    if saved == 0:
+        raise HTTPException(status_code=400, detail="No images saved from HF dataset")
+
+    # Save labels map
+    labels_path = project_dir / "images" / "labels.json"
+    import json
+    labels_path.write_text(json.dumps(label_map, indent=2), encoding="utf-8")
+
+    # Emit sample and basic profile
+    df = pd.DataFrame({"file": list(label_map.keys()), "label": list(label_map.values())})
+    sample_path = project_dir / "sample.csv"
+    df.to_csv(sample_path, index=False)
+
+    await _emit_sample(project_id, df, sample_path)
+    await conductor.transition_to(project_id, StageID.DATA_SOURCE, StageStatus.COMPLETED, "HF images ingested")
+    await conductor.transition_to(project_id, StageID.PROFILE_DATA, StageStatus.IN_PROGRESS, "Profiling dataset")
+    await _emit_profile(project_id, df, project_dir / "profile")
+
+    return {"status": "ok", "images": saved, "labels": list(set(label_map.values()))}
 
 
 @router.post("/{project_id}/ingest/kaggle")
