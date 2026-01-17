@@ -4,10 +4,18 @@ from typing import Any, Dict
 from pydantic import BaseModel, Field, ValidationError
 
 try:
-    # OpenRouter is OpenAI-compatible; LangChain's ChatOpenAI can target it via base_url.
-    from langchain_openai import ChatOpenAI
+    # Direct Gemini provider (recommended for now).
+    from langchain_google_genai import ChatGoogleGenerativeAI
 except Exception:  # pragma: no cover
-    ChatOpenAI = None
+    ChatGoogleGenerativeAI = None
+
+# --- OpenRouter implementation (paused for now) ---
+# If you switch back later, you can restore this import + wiring.
+# try:
+#     # OpenRouter is OpenAI-compatible; LangChain's ChatOpenAI can target it via base_url.
+#     from langchain_openai import ChatOpenAI
+# except Exception:  # pragma: no cover
+#     ChatOpenAI = None
 
 
 class PromptParsedPayload(BaseModel):
@@ -33,12 +41,12 @@ class PromptParsedPayload(BaseModel):
 class PromptParserAgent:
     """Parses a user prompt into the Stage 1 `PROMPT_PARSED` schema.
 
-    Provider: Gemini 1.5 Flash through OpenRouter.
+        Provider: Gemini 1.5 Flash direct.
     - Good + cheap for extraction.
     - Uses structured output to avoid schema drift.
 
     Environment:
-      - OPENROUTER_API_KEY must be set.
+            - GEMINI_API_KEY must be set.
 
     Returns:
       A dict with exactly: {task_type, target, dataset_hint, constraints}
@@ -51,22 +59,21 @@ class PromptParserAgent:
         temperature: float = 0.0,
         timeout_s: int = 30,
     ):
-        if ChatOpenAI is None:
+        if ChatGoogleGenerativeAI is None:
             raise RuntimeError(
-                "Missing dependency 'langchain-openai'. Install it in backend env."
+                "Missing dependency 'langchain-google-genai'. Install it in backend env."
             )
 
-        api_key = os.getenv("OPENROUTER_API_KEY")
+        api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
-            raise RuntimeError("OPENROUTER_API_KEY is not set")
+            raise RuntimeError("GEMINI_API_KEY is not set")
 
-        # Default to a good/cheap Gemini 1.5 model on OpenRouter.
-        self.model = model or "google/gemini-1.5-flash"
+        # Default to Gemini Pro (stable, widely available model)
+        self.model = model or os.getenv("GEMINI_MODEL") or "gemini-pro"
 
-        base_llm = ChatOpenAI(
-            api_key=api_key,
-            base_url="https://openrouter.ai/api/v1",
+        base_llm = ChatGoogleGenerativeAI(
             model=self.model,
+            google_api_key=api_key,
             temperature=temperature,
             timeout=timeout_s,
         )
