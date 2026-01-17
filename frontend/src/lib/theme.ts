@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useLayoutEffect } from 'react';
 import { useLocalStorageState } from './useLocalStorageState';
 
 export type ThemeMode = 'light' | 'midnight';
@@ -24,7 +24,8 @@ export function useTheme() {
   const [storedTheme, setStoredTheme] = useLocalStorageState<StoredThemeMode>(STORAGE_KEY, 'light');
   const theme = normalizeTheme(storedTheme);
 
-  useEffect(() => {
+  // Use layout effect to avoid a flash of incorrect theme on first paint.
+  useLayoutEffect(() => {
     applyThemeToDocument(theme);
   }, [theme]);
 
