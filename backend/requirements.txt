@@ -1,0 +1,14 @@
+FastAPI
+uvicorn
+pandas
+scikit-learn
+numpy
+sqlalchemy
+sqlite
+websockets
+python-dotenv
+tailwindcss
+redis
+joblib
+jupyter
+pydantic
