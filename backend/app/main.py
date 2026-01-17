@@ -31,6 +31,10 @@ from app.ws.router import router as ws_router
 from app.api.test import router as test_router
 from app.api.stages import router as stages_router
 from app.api.assets import router as assets_router
+from app.api.intent import router as intent_router
+from app.api.data import router as data_router
+from app.api.train import router as train_router
+from app.api.export import router as export_router
 
 # Include WebSocket router
 app.include_router(ws_router)
@@ -43,6 +47,18 @@ app.include_router(stages_router)
 
 # Include assets router
 app.include_router(assets_router)
+
+# Include intent/model selection router
+app.include_router(intent_router)
+
+# Include data ingestion/profiling router
+app.include_router(data_router)
+
+# Include training router
+app.include_router(train_router)
+
+# Include report/export router
+app.include_router(export_router)
 
 
 @app.get("/health")
