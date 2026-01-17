@@ -10,13 +10,15 @@ lerna-debug.log*
 # Python cache
 __pycache__/
 *.pyc
-
+venv
+.venv
 # Frontend build
 node_modules
 dist
 dist-ssr
 *.local
-
+data/assets/cache
+data/assets/projects
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
