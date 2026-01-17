@@ -1,7 +1,14 @@
+'use client';
+
 import React, { useState } from 'react';
 
+type ChatMessage = {
+    text: string;
+    sender: 'user' | 'bot';
+};
+
 const ChatPanel = () => {
-    const [messages, setMessages] = useState([]);
+    const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [input, setInput] = useState('');
 
     const handleSend = () => {

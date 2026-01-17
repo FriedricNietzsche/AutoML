@@ -11,7 +11,7 @@ const stages = [
     { id: 'EXPORT', label: 'Export', status: 'pending' },
 ];
 
-const StageTimeline: React.FC = () => {
+const StageTimeline: React.FC<{ projectId?: string }> = () => {
     return (
         <div className="flex flex-col">
             <h2 className="text-lg font-bold mb-2">Stage Timeline</h2>

@@ -1,0 +1,90 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+
+  /* Design tokens (light) */
+  --bg: 247 249 252; /* screenshot-like off-white */
+  --panel: 255 255 255;
+  --panel-2: 252 253 255;
+  --border: 229 232 240;
+  --control: 247 248 250;
+  --control-border: 233 236 244;
+  --text: 16 18 22;
+  --muted: 107 114 128;
+  --accent: 99 102 241; /* indigo */
+
+  /* Back-compat / derived */
+  --fg: var(--text);
+  --glass: var(--panel);
+  --glass-2: var(--panel-2);
+  --glass-border: var(--border);
+}
+
+.light {
+  color-scheme: light;
+}
+
+.dark {
+  color-scheme: dark;
+
+  /* Design tokens (dark) */
+  --bg: 7 12 24; /* deep navy */
+  --panel: 14 20 36; /* panel navy */
+  --panel-2: 12 18 33;
+  --border: 28 36 56; /* soft border */
+  --control: 10 15 28;
+  --control-border: 24 32 52;
+  --text: 235 238 245;
+  --muted: 148 156 171;
+  --accent: 99 102 241; /* same accent */
+
+  /* Back-compat / derived */
+  --fg: var(--text);
+  --glass: var(--panel);
+  --glass-2: 11 13 20;
+  --glass-border: 255 255 255;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: rgb(var(--bg));
+  color: rgb(var(--text));
+  transition-property: background-color, color, border-color, fill, stroke;
+  transition-duration: 250ms;
+  transition-timing-function: ease;
+}
+
+/* Panel + control primitives (match screenshot: clean, not glass) */
+.panel {
+  background: linear-gradient(180deg, rgb(var(--panel)) 0%, rgb(var(--panel-2)) 100%);
+  border: 1px solid rgb(var(--border));
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.08) inset,
+    0 10px 30px rgba(0, 0, 0, 0.08);
+}
+
+.control {
+  background: rgb(var(--control));
+  border: 1px solid rgb(var(--control-border));
+}
+
+/* keep old class names used in components, but map to new primitives */
+.glass {
+  background: linear-gradient(180deg, rgb(var(--panel)) 0%, rgb(var(--panel-2)) 100%);
+  border: 1px solid rgb(var(--border));
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.08) inset,
+    0 10px 30px rgba(0, 0, 0, 0.08);
+}
+
+.glass-input {
+  background: rgb(var(--control));
+  border: 1px solid rgb(var(--control-border));
+}

@@ -1,5 +1,7 @@
+'use client';
+
 import React from 'react';
-import { MonacoEditor } from 'react-monaco-editor';
+import Editor from '@monaco-editor/react';
 
 interface MonacoViewerProps {
     code: string;
@@ -7,20 +9,14 @@ interface MonacoViewerProps {
 }
 
 const MonacoViewer: React.FC<MonacoViewerProps> = ({ code, onChange }) => {
-    const editorOptions = {
-        selectOnLineNumbers: true,
-        automaticLayout: true,
-    };
-
     return (
-        <MonacoEditor
-            width="100%"
-            height="400"
-            language="javascript"
+        <Editor
+            height="400px"
+            defaultLanguage="javascript"
             theme="vs-dark"
             value={code}
-            options={editorOptions}
-            onChange={onChange}
+            options={{ minimap: { enabled: false }, automaticLayout: true }}
+            onChange={(value) => onChange(value ?? '')}
         />
     );
 };

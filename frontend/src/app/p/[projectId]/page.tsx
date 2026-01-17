@@ -1,5 +1,4 @@
 import React from 'react';
-import { useRouter } from 'next/router';
 import ChatPanel from '@/components/ChatPanel';
 import StageTimeline from '@/components/StageTimeline';
 import ConfirmBar from '@/components/ConfirmBar';
@@ -10,9 +9,8 @@ import FileExplorer from '@/components/FileExplorer';
 import ArtifactsPanel from '@/components/ArtifactsPanel';
 import ConsoleLog from '@/components/ConsoleLog';
 
-const ProjectPage = () => {
-    const router = useRouter();
-    const { projectId } = router.query;
+export default function ProjectPage({ params }: { params: { projectId: string } }) {
+    const { projectId } = params;
 
     return (
         <div className="flex h-screen">
@@ -33,6 +31,4 @@ const ProjectPage = () => {
             </div>
         </div>
     );
-};
-
-export default ProjectPage;
+}

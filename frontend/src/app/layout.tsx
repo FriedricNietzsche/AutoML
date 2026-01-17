@@ -1,19 +1,18 @@
-import React from 'react';
+import type { Metadata } from 'next';
+import './globals.css';
+import Providers from './providers';
 
-const Layout = ({ children }) => {
-    return (
-        <div className="flex flex-col h-screen">
-            <header className="bg-gray-800 text-white p-4">
-                <h1 className="text-xl">AutoML Agentic Builder</h1>
-            </header>
-            <main className="flex-1 overflow-auto">
-                {children}
-            </main>
-            <footer className="bg-gray-800 text-white p-4 text-center">
-                <p>&copy; {new Date().getFullYear()} AutoML Agentic Builder</p>
-            </footer>
-        </div>
-    );
+export const metadata: Metadata = {
+    title: 'AutoML Agentic Builder',
+    description: 'Agentic workspace for building tabular ML pipelines',
 };
 
-export default Layout;
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+    return (
+        <html lang="en" suppressHydrationWarning>
+            <body className="min-h-dvh bg-bg text-text antialiased transition-colors duration-300">
+                <Providers>{children}</Providers>
+            </body>
+        </html>
+    );
+}

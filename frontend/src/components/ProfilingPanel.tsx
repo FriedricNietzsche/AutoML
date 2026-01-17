@@ -1,31 +1,10 @@
 import React from 'react';
 
-const ProfilingPanel: React.FC<{ profilingData: any }> = ({ profilingData }) => {
+const ProfilingPanel: React.FC<{ projectId?: string }> = ({ projectId }) => {
     return (
         <div className="profiling-panel">
             <h2 className="text-xl font-bold">Data Profiling</h2>
-            {profilingData ? (
-                <div>
-                    <h3 className="text-lg">Summary Statistics</h3>
-                    <ul>
-                        {Object.entries(profilingData.summary).map(([key, value]) => (
-                            <li key={key}>
-                                <strong>{key}:</strong> {value}
-                            </li>
-                        ))}
-                    </ul>
-                    <h3 className="text-lg">Data Types</h3>
-                    <ul>
-                        {Object.entries(profilingData.dataTypes).map(([column, type]) => (
-                            <li key={column}>
-                                <strong>{column}:</strong> {type}
-                            </li>
-                        ))}
-                    </ul>
-                </div>
-            ) : (
-                <p>No profiling data available.</p>
-            )}
+            <p className="text-gray-600">Placeholder (project {projectId ?? '—'}). Profiling events/assets wiring happens in Task 4.1.</p>
         </div>
     );
 };
