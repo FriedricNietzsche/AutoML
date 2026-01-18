@@ -9,11 +9,9 @@ import { clamp01, formatClock, seeded } from './types';
 import { VISUAL_LABEL, VISUALS } from './visuals/visualRegistry';
 import TrainingLossVisualizer from './TrainingLossVisualizer';
 import ModelMetricsVisualizer from './ModelMetricsVisualizer';
-import { useMockAutoMLStream } from '../../../mock/useMockAutoMLStream';
 import { useLiveMetrics } from '../../../hooks/useLiveMetrics';
 import type { ScenarioId } from '../../../mock/scenarios';
-import type { MockWSEnvelope } from '../../../mock/backendEventTypes';
-import type { ArtifactAddedPayload, LogLinePayload } from '../../../lib/contract';
+import { STAGE_ORDER, type StageID } from '../../../lib/contract';
 import { SCENARIO_VIZ, type LoaderStepId } from '../../../mock/scenarioVizConfig';
 import { useProjectStore } from '../../../store/projectStore';
 
@@ -201,32 +199,55 @@ function computeWeightedPhase(phases: StepPhase[], elapsedMs: number, durationMs
   return { phaseIndex: idx, phase, phaseProgress, phases, durs };
 }
 
-export default function TrainingLoader({ onComplete, updateFileContent, scenarioId, seed, useMockStream = true }: TrainingLoaderProps) {
+export default function TrainingLoader({ onComplete, updateFileContent, scenarioId, seed }: TrainingLoaderProps) {
   const reducedMotionPref = useReducedMotion();
   const reducedMotion = !!reducedMotionPref;
 
-  // Stage management
-  const [currentStage, setCurrentStage] = useState<number>(0); // 0 = initial, 1-5 = stages
-  const [isStageRunning, setIsStageRunning] = useState<boolean>(false);
-  const [stageCompleted, setStageCompleted] = useState<boolean>(false);
-  const [showChangeOption, setShowChangeOption] = useState<boolean>(false);
-  const [changeRequest, setChangeRequest] = useState<string>('');
+  const {
+    stages,
+    currentStageId,
+    confirm,
+  } = useProjectStore((state) => ({
+    stages: state.stages,
+    currentStageId: state.currentStageId,
+    confirm: state.confirm,
+  }));
+
+  const currentStageState = stages[currentStageId];
+  const currentStageIndex = STAGE_ORDER.findIndex(s => s.id === currentStageId);
+  const isWaitingConfirmation = currentStageState?.status === 'WAITING_CONFIRMATION';
 
   const [activeScenario, setActiveScenario] = useState<ScenarioId>(scenarioId ?? 'B');
+  const [changeRequest, setChangeRequest] = useState<string>('');
+  const lastLossValueRef = useRef<number | null>(null);
+  const lastAccValueRef = useRef<number | null>(null);
+
+  // Map StageID to a LoaderStepId for animations
+  const STAGE_TO_STEP: Record<StageID, LoaderStepId> = {
+    PARSE_INTENT: 'matrixOps',
+    DATA_SOURCE: 'matrixOps',
+    PROFILE_DATA: 'matrixOps',
+    PREPROCESS: 'matrixOps',
+    MODEL_SELECT: 'neuralNet',
+    TRAIN: 'trainLoss',
+    REVIEW_EDIT: 'evaluation',
+    EXPORT: 'embedding',
+  };
+
+  const loaderStepId = STAGE_TO_STEP[currentStageId] || 'matrixOps';
+  const isStageRunning = currentStageState?.status === 'IN_PROGRESS';
+
+
   useEffect(() => {
     if (!scenarioId) return;
     setActiveScenario(scenarioId);
   }, [scenarioId]);
 
-  const { events: mockEvents, metricsState: mockMetrics } = useMockAutoMLStream({
-    scenarioId: activeScenario,
-    seed,
-    enabled: useMockStream && currentStage > 0,
-  });
-  const { metricsState: liveMetrics } = useLiveMetrics();
-  const metricsState = useMockStream ? mockMetrics : liveMetrics;
-  const events = useMockStream ? mockEvents : [];
-  const applyProjectEvent = useProjectStore((state) => state.applyEvent);
+
+  // useMockStream is now ignored, we only use live metrics
+  const { metricsState } = useLiveMetrics();
+
+
 
   // Load actual image pixels client-side for image data
   const [loadedImagePixels, setLoadedImagePixels] = useState<Array<{ r: number; g: number; b: number }> | null>(null);
@@ -246,8 +267,9 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
       return;
     }
 
-    // Only do DOM image extraction when Stage 2 is actually mounted.
-    if (currentStage !== 2) return;
+    // Only do DOM image extraction when the relevant stage is active.
+    if (currentStageId !== 'DATA_SOURCE') return;
+
 
     const canvasSize = 280;
     const gridSize = 20;
@@ -322,14 +344,16 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
     return () => {
       cancelled = true;
     };
-  }, [currentStage, metricsState.datasetPreview?.dataType, metricsState.datasetPreview?.imageData?.needsClientLoad]);
+  }, [currentStageId, metricsState.datasetPreview?.dataType, metricsState.datasetPreview?.imageData?.needsClientLoad]);
+
 
   // If the image finished loading before the on-screen canvas ref was mounted, paint it now.
   useEffect(() => {
     const isImage = metricsState.datasetPreview?.dataType === 'image';
     const needsClientLoad = !!metricsState.datasetPreview?.imageData?.needsClientLoad;
-    if (currentStage !== 2 || !isImage || !needsClientLoad) return;
+    if (currentStageId !== 'DATA_SOURCE' || !isImage || !needsClientLoad) return;
     if (!loadedImagePixels || loadedImagePixels.length === 0) return;
+
 
     const canvas = imageCanvasRef.current;
     const offscreen = imageOffscreenRef.current;
@@ -339,13 +363,14 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
     if (!ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(offscreen, 0, 0);
-  }, [currentStage, loadedImagePixels, metricsState.datasetPreview?.dataType, metricsState.datasetPreview?.imageData?.needsClientLoad]);
+  }, [currentStageId, loadedImagePixels, metricsState.datasetPreview?.dataType, metricsState.datasetPreview?.imageData?.needsClientLoad]);
 
   const stage1Thinking = metricsState.thinkingByStage?.DATA_SOURCE ?? [];
 
-  // Keep Stage 1 view pinned to the latest streamed message.
+  // Keep Thinking view pinned to the latest streamed message.
   useEffect(() => {
-    if (currentStage !== 1) return;
+    if (currentStageId !== 'PARSE_INTENT' && currentStageId !== 'DATA_SOURCE') return;
+
     const el = stage1ScrollRef.current;
     if (!el) return;
 
@@ -357,7 +382,8 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
         el.scrollTop = el.scrollHeight;
       }
     });
-  }, [currentStage, reducedMotion, stage1Thinking.length]);
+  }, [currentStageId, reducedMotion, stage1Thinking.length]);
+
 
   const scenarioConfig = useMemo(() => SCENARIO_VIZ[activeScenario], [activeScenario]);
   
@@ -371,15 +397,13 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
       phases: [{ kind: 'operation' as const }],
     },
     {
-      id: 'preprocessing' as LoaderStepId,
-      title: 'Preprocessing',
-      subtitle: 'Normalizing and transforming features',
-      durationMs: 6000,
-      matrixLabel: 'Data Preview',
-      matrixRows: 8,
-      matrixCols: 6,
-      phases: [{ kind: 'operation' as const }],
+      id: 'neuralNet' as LoaderStepId,
+      title: 'Neural Architecture',
+      subtitle: 'Configuring model layers',
+      durationMs: 4000,
+      phases: [{ kind: 'visual' as const, visualId: 'neuralNetForward' as const }],
     },
+
     {
       id: 'trainLoss' as LoaderStepId,
       title: 'Training Model',
@@ -406,11 +430,13 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
     },
   ], []);
 
-  // Get the current stage's step definition
-  const steps = useMemo(() => {
-    if (currentStage === 0 || currentStage > 5) return stageDefinitions;
-    return [stageDefinitions[currentStage - 1]];
-  }, [currentStage, stageDefinitions]);
+  // Get the current stage's step definition based on mapping
+  const activeStepDef = useMemo(() => {
+    return stageDefinitions.find(d => d.id === loaderStepId) || stageDefinitions[0];
+  }, [loaderStepId, stageDefinitions]);
+
+
+
 
   const metricKind = scenarioConfig.metricKind;
 
@@ -419,120 +445,57 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
     updateFileContentRef.current = updateFileContent;
   }, [updateFileContent]);
 
-  const processedEventsRef = useRef(0);
   useEffect(() => {
-    if (!useMockStream) return;
-    if (events.length <= processedEventsRef.current) return;
+    // Mock event processing removed. Live events are applied directly to the projectStore.
+  }, []);
 
-    for (let i = processedEventsRef.current; i < events.length; i += 1) {
-      const event = events[i] as MockWSEnvelope;
-      applyProjectEvent(event);
-      const name = event.event?.name;
-      const payload = event.event?.payload as Record<string, unknown> | undefined;
-
-      if (name === 'ARTIFACT_ADDED') {
-        const artifactPayload = payload as ArtifactAddedPayload | undefined;
-        const artifact = artifactPayload?.artifact;
-        const meta = artifact?.meta as Record<string, unknown> | undefined;
-        const filePath = meta?.file_path as string | undefined;
-        const content = meta?.content as string | undefined;
-        if (filePath && typeof content === 'string') {
-          updateFileContentRef.current(filePath, content);
-        }
-      }
-
-      if (name === 'LOG_LINE') {
-        const logPayload = payload as LogLinePayload | undefined;
-        if (!logPayload?.text) continue;
-        appendLog(updateFileContentRef.current, logPayload.text, logPayload.level);
-      }
-    }
-
-    processedEventsRef.current = events.length;
-  }, [events, useMockStream]);
 
   const [now, setNow] = useState(0);
   const nowRef = useRef(0);
 
-  const [stepIndex, setStepIndex] = useState(0);
   const [stepStartedAt, setStepStartedAt] = useState(0);
-  const stepIndexRef = useRef(0);
-  useEffect(() => {
-    stepIndexRef.current = stepIndex;
-  }, [stepIndex]);
 
-  // Handle stage progression
+  // Handle stage progression via projectStore
   const handleProceed = () => {
-    if (currentStage === 0) {
-      // Start stage 1
-      setCurrentStage(1);
-      setIsStageRunning(true);
-      setStageCompleted(false);
-      setStepIndex(0);
-      setStepStartedAt(nowRef.current || 0);
-    } else if (stageCompleted && !isStageRunning) {
-      // Move to next stage
-      const nextStage = currentStage + 1;
-      if (nextStage <= 5) {
-        setCurrentStage(nextStage);
-        setIsStageRunning(true);
-        setStageCompleted(false);
-        setShowChangeOption(false);
-        setStepIndex(0);
-        setStepStartedAt(nowRef.current || 0);
-      }
-    }
+    confirm();
   };
 
+
   const handleMakeChanges = () => {
-    // Redirect to stage 3 with the change request
     if (changeRequest.trim()) {
-      // TODO: Send changeRequest to the bot/backend
       console.log('Change requested:', changeRequest);
       appendLog(updateFileContentRef.current, `User requested changes: ${changeRequest}`);
     }
-    setCurrentStage(3);
-    setIsStageRunning(true);
-    setStageCompleted(false);
-    setShowChangeOption(false);
-    setChangeRequest('');
-    setStepIndex(0);
-    setStepStartedAt(nowRef.current || 0);
+    confirm();
   };
+
 
   const handleDeployment = () => {
-    // Proceed to stage 5 (deployment)
-    setCurrentStage(5);
-    setIsStageRunning(true);
-    setStageCompleted(false);
-    setShowChangeOption(false);
-    setStepIndex(0);
-    setStepStartedAt(nowRef.current || 0);
+    confirm();
   };
 
-  const completedRef = useRef(false);
-  const advanceGuardRef = useRef(-1);
+
   const clockInitRef = useRef(false);
 
   const lossFull = useMemo(() => {
-    if (useMockStream && metricsState.lossSeries.length > 0) return metricsState.lossSeries;
+    if (metricsState.lossSeries.length > 0) return metricsState.lossSeries;
     return buildLossSeries(36);
-  }, [metricsState.lossSeries, useMockStream]);
+  }, [metricsState.lossSeries]);
 
   const accFull = useMemo(() => {
-    if (useMockStream && metricsState.accSeries.length > 0) return metricsState.accSeries;
+    if (metricsState.accSeries.length > 0) return metricsState.accSeries;
     return buildAccuracySeries(36);
-  }, [metricsState.accSeries, useMockStream]);
+  }, [metricsState.accSeries]);
 
   const f1Full = useMemo(() => {
-    if (useMockStream && metricsState.f1Series.length > 0) return metricsState.f1Series;
+    if (metricsState.f1Series.length > 0) return metricsState.f1Series;
     return [] as MetricPoint[];
-  }, [metricsState.f1Series, useMockStream]);
+  }, [metricsState.f1Series]);
 
   const rmseFull = useMemo(() => {
-    if (useMockStream && metricsState.rmseSeries.length > 0) return metricsState.rmseSeries;
+    if (metricsState.rmseSeries.length > 0) return metricsState.rmseSeries;
     return [] as MetricPoint[];
-  }, [metricsState.rmseSeries, useMockStream]);
+  }, [metricsState.rmseSeries]);
 
   const [lossVisible, setLossVisible] = useState<LossPoint[]>([]);
   const [accVisible, setAccVisible] = useState<MetricPoint[]>([]);
@@ -542,25 +505,16 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
     if (metricKind === 'rmse') return rmseFull;
     if (metricKind === 'f1') return f1Full.length > 0 ? f1Full : accFull;
     return accFull;
-  }, [accFull, f1Full, metricKind, rmseFull]);
-  
-  const lastLossValueRef = useRef<number | null>(null);
-  const lastAccValueRef = useRef<number | null>(null);
+  }, [activeScenario, currentStageId, accFull, f1Full, rmseFull, metricKind]);
 
-  useEffect(() => {
-    if (!useMockStream) return;
-    completedRef.current = false;
-    advanceGuardRef.current = -1;
-    setStepIndex(0);
-    setStepStartedAt(nowRef.current || 0);
-  }, [activeScenario, useMockStream]);
 
-  const step = steps[Math.min(stepIndex, steps.length - 1)];
+  const step = activeStepDef;
+
   const elapsed = Math.max(0, now - stepStartedAt);
 
   const { phaseIndex, phase, phaseProgress } = computeWeightedPhase(step.phases, elapsed, step.durationMs);
 
-  const stepSeed = (seed ?? DEFAULT_SEED) + stepIndex * 1000 + phaseIndex * 100;
+  const stepSeed = (seed ?? DEFAULT_SEED) + currentStageIndex * 1000 + phaseIndex * 100;
 
   useEffect(() => {
     lastLossValueRef.current = lossVisible.at(-1)?.val_loss ?? null;
@@ -598,22 +552,24 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
 
   // On step start: logs + progress artifact.
   useEffect(() => {
-    if (currentStage === 0 || !isStageRunning) return;
-    appendLog(updateFileContentRef.current, `${step.title} ΓÇö ${step.subtitle}`);
+    if (!currentStageId) return;
+    appendLog(updateFileContentRef.current, `${step.title} — ${step.subtitle}`);
     writeJson(updateFileContentRef.current, '/artifacts/progress.json', {
       step: step.id,
-      stage: currentStage,
+      stage: currentStageId,
       startedAt: new Date().toISOString(),
     });
-  }, [currentStage, isStageRunning, step.id, step.title, step.subtitle]);
+  }, [currentStageId, step.id, step.title, step.subtitle]);
+
 
   // Reset metric data when starting new stage
   useEffect(() => {
-    if (isStageRunning && currentStage > 0) {
+    if (isStageRunning) {
       setLossVisible([]);
       setAccVisible([]);
     }
-  }, [currentStage, isStageRunning]);
+  }, [currentStageId, isStageRunning]);
+
 
   // Graph phase metric reveal + artifact writes.
   useEffect(() => {
@@ -632,12 +588,14 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
 
     if (graphType === 'accuracy') {
       const series = metricFull;
+      if (!series) return;
       const targetCount = Math.max(0, Math.floor(series.length * late));
       if (targetCount > accVisible.length) {
         const next = series.slice(0, targetCount);
         setAccVisible(next);
       }
     }
+
   }, [phase, phaseProgress, lossFull, metricFull, lossVisible.length, accVisible.length]);
 
   const writeArtifact = (path: string, value: unknown) => {
@@ -659,62 +617,36 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
     return { accuracy: computedAcc, precision, recall, f1: computedF1 };
   }, [metricsState.metricsSummary, useRmse]);
 
-  const fixedNodes = [
-    { id: 1, label: 'Data Load' },
-    { id: 2, label: 'Preprocess' },
-    { id: 3, label: 'Train' },
-    { id: 4, label: 'Evaluate' },
-    { id: 5, label: 'Export' },
-  ];
 
-  // Check when stage animation is complete
+
+  // Handle auto-completion of Export stage
   useEffect(() => {
-    if (!isStageRunning || currentStage === 0) return;
-    
-    const stageDef = stageDefinitions[currentStage - 1];
-    if (!stageDef) return;
-    
-    const timeout = setTimeout(() => {
-      setIsStageRunning(false);
-      setStageCompleted(true);
-      if (currentStage === 4) {
-        setShowChangeOption(true);
-      } else if (currentStage === 5) {
-        // After deployment, navigate to tester page
-        setTimeout(() => {
-          onComplete();
-        }, 1500); // Give user a moment to see completion message
-      }
-    }, stageDef.durationMs);
-    
-    return () => clearTimeout(timeout);
-  }, [isStageRunning, currentStage, stageDefinitions, onComplete]);
+    if (currentStageId === 'EXPORT' && currentStageState?.status === 'COMPLETED') {
+      const timeout = setTimeout(() => {
+        onComplete();
+      }, 1500); 
+      return () => clearTimeout(timeout);
+    }
+  }, [currentStageId, currentStageState?.status, onComplete]);
+
 
   const getStagePrompt = () => {
-    if (currentStage === 0) {
+    const label = STAGE_ORDER.find(s => s.id === currentStageId)?.label || step.title;
+    const desc = STAGE_ORDER.find(s => s.id === currentStageId)?.description || step.subtitle;
+
+    if (currentStageState?.status === 'COMPLETED') {
       return {
-        title: "Ready to Build Your AI Model?",
-        subtitle: "Click 'Proceed' to start the automated machine learning pipeline. We'll guide you through data loading, preprocessing, training, evaluation, and deployment.",
+        title: `${label} Complete!`,
+        subtitle: `Ready to proceed to the next stage.`,
       };
     }
-    if (isStageRunning) {
-      return {
-        title: step.title,
-        subtitle: step.subtitle,
-      };
-    }
-    if (stageCompleted) {
-      const stageMessages = [
-        { title: "Stage 1 Complete!", subtitle: "Data has been loaded and validated. Ready to proceed to preprocessing?" },
-        { title: "Stage 2 Complete!", subtitle: "Data preprocessing finished successfully. Ready to train the model?" },
-        { title: "Stage 3 Complete!", subtitle: "Model training completed. Ready to evaluate performance?" },
-        { title: "Stage 4 Complete!", subtitle: "Model evaluation finished. Review the results and decide next steps." },
-        { title: "Deployment Complete!", subtitle: "Redirecting to model tester..." },
-      ];
-      return stageMessages[currentStage - 1] || stageMessages[0];
-    }
-    return { title: "", subtitle: "" };
+    
+    return {
+      title: label,
+      subtitle: desc,
+    };
   };
+
 
   const prompt = getStagePrompt();
 
@@ -731,7 +663,7 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
                 <div className="text-sm text-replit-textMuted mt-1">{prompt.subtitle}</div>
               </div>
               <div className="flex items-center gap-3">
-                {currentStage === 4 && showChangeOption ? (
+                {currentStageId === 'REVIEW_EDIT' && isWaitingConfirmation ? (
                   <>
                     <input
                       type="text"
@@ -762,41 +694,42 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
                 ) : (
                   <button
                     onClick={handleProceed}
-                    disabled={isStageRunning}
+                    disabled={!isWaitingConfirmation}
                     className={clsx(
                       'px-6 py-2 rounded-lg text-sm font-medium transition-colors',
-                      isStageRunning
+                      !isWaitingConfirmation
                         ? 'bg-replit-border/40 text-replit-textMuted cursor-not-allowed'
                         : 'bg-replit-accent hover:bg-replit-accent/90 text-white cursor-pointer'
                     )}
                   >
-                    {currentStage === 0 ? 'Start' : isStageRunning ? 'Running...' : 'Proceed'}
+                    {isWaitingConfirmation ? 'Proceed' : 'Running...'}
                   </button>
                 )}
               </div>
             </div>
 
+
             {/* Show content only when stage is running */}
-            {!isStageRunning && currentStage === 0 && (
+            {currentStageId === 'PARSE_INTENT' && currentStageState?.status === 'PENDING' && (
               <div className="h-[calc(100%-80px)] flex items-center justify-center">
                 <div className="text-center max-w-2xl">
                   <div className="text-6xl mb-6">🚀</div>
-                  <h2 className="text-2xl font-bold text-replit-text mb-3">Let's Build Your AI Model</h2>
+                  <h2 className="text-2xl font-bold text-replit-text mb-3">Initializing Pipeline</h2>
                   <p className="text-replit-textMuted mb-6">
-                    Our automated pipeline will handle everything from data loading to deployment.
-                    Click 'Start' when you're ready to begin.
+                    Our automated pipeline is preparing to handle everything from data loading to deployment.
                   </p>
                 </div>
               </div>
             )}
 
-            {(isStageRunning || (!isStageRunning && stageCompleted && currentStage > 0)) && (
+
+            {currentStageId && (
             <div className="relative h-[calc(100%-80px)]">
-              {/* Animation Content - always visible but blurred when completed */}
               <div className={clsx(
                 'h-full transition-all duration-500',
-                !isStageRunning && stageCompleted && 'blur-sm'
+                isWaitingConfirmation && 'blur-sm'
               )}>
+
             <AnimatePresence mode="wait" initial={false}>
               {/* Operation */}
               {phase.kind === 'operation' ? (
@@ -810,7 +743,8 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
                 >
                   <div className="h-full flex flex-col min-h-0">
                     <div className="rounded-2xl border border-replit-border bg-replit-surface shadow-sm p-8 h-full overflow-hidden">
-                      {currentStage === 1 ? (
+                      {currentStageId === 'PARSE_INTENT' || currentStageId === 'DATA_SOURCE' ? (
+
                         <div className="h-full flex flex-col">
                           {/* Thinking Panel */}
                           <div className="flex-1 rounded-xl bg-replit-surface/35 p-6 pb-6 pt-2 min-h-0 flex flex-col">
@@ -900,7 +834,8 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
                             </div>
                           </div>
                         </div>
-                      ) : currentStage === 2 ? (
+                      ) : currentStageId === 'PROFILE_DATA' || currentStageId === 'PREPROCESS' ? (
+
                         <div className="h-full flex flex-col">
                           {metricsState.datasetPreview?.dataType === 'image' ? (
                             /* Stage 2: Image Vectorization Animation */
@@ -1315,8 +1250,8 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
             </AnimatePresence>
             </div>
 
-            {/* Completion Overlay - shown on top of blurred animation */}
-            {!isStageRunning && stageCompleted && currentStage > 0 && (
+            {/* Completion Overlay */}
+            {isWaitingConfirmation && (
               <motion.div
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
@@ -1325,36 +1260,33 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
                 className="absolute inset-0 flex items-center justify-center pointer-events-none"
               >
                 <div className="text-center max-w-2xl bg-replit-surface/95 backdrop-blur-md rounded-2xl border border-replit-border shadow-2xl p-8 pointer-events-auto">
-                  <div className="text-6xl mb-6 text-green-500">✓</div>
+                  <div className="text-6xl mb-6 text-amber-500">?</div>
                   <h2 className="text-2xl font-bold text-replit-text mb-3">
-                    {currentStage === 4 && showChangeOption ? 'Ready for Next Steps' : 'Stage Completed!'}
+                    {currentStageId === 'REVIEW_EDIT' ? 'Ready for Next Steps' : `${prompt.title} Complete!`}
                   </h2>
-                  {currentStage === 4 && showChangeOption ? (
-                    <p className="text-replit-textMuted mb-6">
-                      Would you like to make any changes to your model, or proceed to deployment?
-                    </p>
-                  ) : (
-                    <p className="text-replit-textMuted mb-6">
-                      Click 'Proceed' to continue to the next stage.
-                    </p>
-                  )}
+                  <p className="text-replit-textMuted mb-6">
+                    {currentStageId === 'REVIEW_EDIT' 
+                      ? 'Would you like to make any changes to your model, or proceed to deployment?'
+                      : 'Review the results and click Proceed to continue.'}
+                  </p>
                 </div>
               </motion.div>
             )}
+
             </div>
             )}
           </div>
         </div>
 
-        {/* Bottom: Fixed linked list nodes */}
         <div className="shrink-0 border-t border-replit-border bg-replit-surface">
-          <div className="px-4 py-4">
-            <div className="flex flex-col items-center gap-2">
+          <div className="px-4 py-4 overflow-x-auto">
+            <div className="flex flex-col items-center gap-2 min-w-max">
               {/* Circles row with connecting lines */}
-              <div className="flex items-center justify-center">
-                {fixedNodes.map((node, idx) => {
-                  const isActive = idx + 1 === currentStage && isStageRunning;
-                  const isDone = idx + 1 < currentStage;
+              <div className="flex items-center justify-center px-4">
+                {STAGE_ORDER.map((stageItem, idx) => {
+                  const stageState = stages[stageItem.id];
+                  const isActive = stageItem.id === currentStageId;
+                  const isDone = stageState?.status === 'COMPLETED';
                   const nodeBg = isDone
                     ? 'bg-replit-success/80 text-white border-replit-success/80'
                     : isActive
@@ -1362,15 +1294,16 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
                       : 'bg-replit-surface/35 text-replit-textMuted border-replit-border/60';
 
                   return (
-                    <div key={node.id} className="flex items-center">
+                    <div key={stageItem.id} className="flex items-center">
                       <div
                         className={clsx(
-                          'relative w-10 h-10 rounded-full border-2 flex items-center justify-center text-sm font-semibold shrink-0 transition-all',
+                          'relative w-8 h-8 rounded-full border-2 flex items-center justify-center text-xs font-semibold shrink-0 transition-all',
                           nodeBg
                         )}
+                        title={stageItem.label}
                       >
-                        {node.id}
-                        {isActive ? (
+                        {idx + 1}
+                        {isActive && stageState?.status === 'IN_PROGRESS' ? (
                           <div
                             aria-hidden
                             className={clsx(
@@ -1380,10 +1313,10 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
                           />
                         ) : null}
                       </div>
-                      {idx < fixedNodes.length - 1 && (
+                      {idx < STAGE_ORDER.length - 1 && (
                         <div 
                           className={clsx(
-                            'h-1 w-16 -mx-px transition-all duration-500',
+                            'h-0.5 w-10 -mx-px transition-all duration-500',
                             isDone ? 'bg-replit-success/80' : 'bg-replit-border/60'
                           )}
                         />
@@ -1393,16 +1326,19 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
                 })}
               </div>
               {/* Labels row */}
-              <div className="flex items-center justify-center">
-                {fixedNodes.map((node, idx) => {
-                  const isActive = idx + 1 === currentStage && isStageRunning;
+              <div className="flex items-center justify-center px-4">
+                {STAGE_ORDER.map((stageItem, idx) => {
+                  const isActive = stageItem.id === currentStageId;
                   return (
-                    <div key={node.id} className="flex items-center">
-                      <div className={clsx('text-xs font-medium w-10 text-center', isActive ? 'text-replit-text' : 'text-replit-textMuted')}>
-                        {node.label}
+                    <div key={stageItem.id} className="flex items-center">
+                      <div className={clsx(
+                        'text-[10px] font-medium w-8 text-center leading-tight truncate',
+                        isActive ? 'text-replit-text' : 'text-replit-textMuted'
+                      )}>
+                        {stageItem.label}
                       </div>
-                      {idx < fixedNodes.length - 1 && (
-                        <div className="w-16 -mx-px" />
+                      {idx < STAGE_ORDER.length - 1 && (
+                        <div className="w-10 -mx-px" />
                       )}
                     </div>
                   );
@@ -1411,6 +1347,7 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
             </div>
           </div>
         </div>
+
       </div>
     </div>
   );

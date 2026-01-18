@@ -45,9 +45,11 @@ const resolveBaseUrl = () => {
   // Dev fallback: assume backend on 8000 when frontend runs on 5173.
   if (typeof window !== 'undefined') {
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    return `${proto}://${window.location.hostname}:8000`;
+    // Use 127.0.0.1 explicitly to avoid localhost resolution ambiguity (IPv4 vs IPv6)
+    const host = window.location.hostname === 'localhost' ? '127.0.0.1' : window.location.hostname;
+    return `${proto}://${host}:8000`;
   }
-  return 'ws://localhost:8000';
+  return 'ws://127.0.0.1:8000';
 };
 
 const makeUrl = (baseUrl: string, projectId: string) => {
@@ -74,10 +76,12 @@ export function createWebSocketClient(opts: WSClientOptions): WSClient {
   const fullUrl = makeUrl(url, projectId);
 
   const connect = () => {
+    console.log(`[WS] Attempting connection to ${fullUrl} (attempt ${attempt})`);
     onStatusChange?.('connecting');
     socket = new WebSocket(fullUrl);
 
     socket.onopen = () => {
+      console.log(`[WS] Connection established to ${fullUrl}`);
       attempt = 0;
       onStatusChange?.('open');
     };
@@ -87,20 +91,24 @@ export function createWebSocketClient(opts: WSClientOptions): WSClient {
         const parsed = JSON.parse(event.data) as EventEnvelope;
         onEvent?.(parsed);
       } catch (err) {
+        console.error('[WS] Message parse error:', err);
         onError?.(err);
       }
     };
 
     socket.onerror = (err) => {
+      console.error(`[WS] WebSocket error for ${fullUrl}:`, err);
       onStatusChange?.('error');
       onError?.(err);
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event) => {
+      console.log(`[WS] Connection closed for ${fullUrl}. Code: ${event.code}, Reason: ${event.reason}`);
       onStatusChange?.('closed');
       if (!closed) {
         const delay = retryDelaysMs[Math.min(attempt, retryDelaysMs.length - 1)];
         attempt += 1;
+        console.log(`[WS] Retrying in ${delay}ms...`);
         setTimeout(connect, delay);
       }
     };

@@ -9,9 +9,10 @@ export const resolveHttpBase = (wsBase?: string) => {
 
   if (typeof window !== 'undefined') {
     const proto = window.location.protocol === 'https:' ? 'https' : 'http';
-    return `${proto}://${window.location.hostname}:8000`;
+    const host = window.location.hostname === 'localhost' ? '127.0.0.1' : window.location.hostname;
+    return `${proto}://${host}:8000`;
   }
-  return 'http://localhost:8000';
+  return 'http://127.0.0.1:8000';
 };
 
 export const joinUrl = (base: string, path: string) => {

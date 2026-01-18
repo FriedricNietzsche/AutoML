@@ -97,11 +97,19 @@ export const useProjectStore = create<ProjectStoreState>((set, get) => ({
   wsClient: null,
 
   connect: (opts) => {
-    const projectId = opts?.projectId ?? get().projectId;
-    const wsBase = opts?.wsBase ?? get().wsBase;
+    const state = get();
+    const projectId = opts?.projectId ?? state.projectId;
+    const wsBase = opts?.wsBase ?? state.wsBase;
     const apiBase = resolveHttpBase(wsBase);
 
-    get().wsClient?.close();
+    // Skip if already connected/connecting to the same target
+    if (state.wsClient && state.projectId === projectId && state.wsBase === wsBase && 
+        (state.connectionStatus === 'open' || state.connectionStatus === 'connecting')) {
+      return;
+    }
+
+    // Ensure previous socket is closed
+    state.wsClient?.close();
 
     const client = createWebSocketClient({
       projectId,

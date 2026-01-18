@@ -445,49 +445,43 @@ async def ingest_kaggle(project_id: str, dataset: str = Body(..., embed=True), f
 @router.post("/{project_id}/ingest/auto")
 async def ingest_auto(project_id: str, dataset_hint: str = Body(..., embed=True), file_name: Optional[str] = Body(None, embed=True)):
     """
-    Auto-ingest from Kaggle using dataset_hint. If multiple matches, emit WAITING_CONFIRMATION.
+    Auto-ingest from Hugging Face using dataset_hint. If multiple matches, emit WAITING_CONFIRMATION.
     """
-    import kaggle  # type: ignore
-
     if not dataset_hint.strip():
         raise HTTPException(status_code=400, detail="dataset_hint is required")
 
-    try:
-        kaggle.api.authenticate()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Kaggle auth failed: {e}")
-
-    def is_public(ref: str) -> bool:
-        try:
-            files = kaggle.api.dataset_list_files(ref)
-            # If we can list files without auth error, treat as public.
-            return bool(files) or files is not None
-        except Exception:
-            return False
-
-    # If the hint looks like an explicit slug, short-circuit to that.
-    if "/" in dataset_hint:
-        refs = [dataset_hint]
-    else:
-        matches = kaggle.api.dataset_list(search=dataset_hint)
-        refs = [d.ref for d in matches]
-    # Curated public shortcuts for demos (choose public/gated-free datasets)
+    # Curated shortcuts for common demos
     curated = {
-        "catsdogs": "shaunthesheep/microsoft-catsvsdogs-dataset",  # adjust if gated
-        "cats vs dogs": "shaunthesheep/microsoft-catsvsdogs-dataset",
-        "alzheimer": "tawsifurrahman/alzheimers-dataset-4-class-of-images",
+        "titanic": "youssefmitwally/titanic",
+        "iris": "scikit-learn/iris",
+        "mnist": "mnist",
+        "housing": "AMES-Housing/Ames-Housing-Dataset",
+        "catsdogs": "microsoft/cats_vs_dogs",
+        "cats vs dogs": "microsoft/cats_vs_dogs",
     }
-    if dataset_hint.lower() in curated:
-        refs = [curated[dataset_hint.lower()]]
+    
+    hint_lower = dataset_hint.lower().strip()
+    if hint_lower in curated:
+        return await ingest_hf(project_id, dataset=curated[hint_lower])
 
-    public_refs = [ref for ref in refs if is_public(ref)]
+    # If the hint looks like an explicit repo (contains '/'), try it directly
+    if "/" in dataset_hint and not dataset_hint.startswith("http"):
+        try:
+            return await ingest_hf(project_id, dataset=dataset_hint)
+        except Exception:
+            pass # Fall through to search if direct ingest fails
 
-    if not public_refs:
-        raise HTTPException(status_code=404, detail="No public Kaggle datasets found for hint; please provide a dataset or upload.")
-    if len(public_refs) > 1:
-        await _emit_waiting_confirmation(project_id, f"Multiple public datasets found for '{dataset_hint}'", public_refs[:5])
-        return {"status": "needs_confirmation", "candidates": public_refs[:5]}
+    # Search HF
+    search_res = await search_hf_datasets(dataset_hint, limit=10)
+    results = search_res.get("results", [])
 
-    chosen = public_refs[0]
-    # If caller provided a specific file_name, pass it through; otherwise let ingest_kaggle pick first CSV.
-    return await ingest_kaggle(project_id, dataset=chosen, file_name=file_name)
+    if not results:
+        raise HTTPException(status_code=404, detail=f"No public Hugging Face datasets found for hint: {dataset_hint}")
+
+    if len(results) > 1:
+        candidates = [r["id"] for r in results]
+        await _emit_waiting_confirmation(project_id, f"Found multiple Hugging Face datasets for '{dataset_hint}'", candidates[:5])
+        return {"status": "needs_confirmation", "candidates": candidates[:5]}
+
+    chosen = results[0]["id"]
+    return await ingest_hf(project_id, dataset=chosen)

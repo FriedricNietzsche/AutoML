@@ -145,14 +145,19 @@ export default function AppShell() {
     undefined;
   const apiBase = useMemo(() => resolveHttpBase(wsBase), [wsBase]);
 
-  const { connectionStatus, lastEvent, connect: connectProject, hydrate } = useProjectStore((state) => ({
-    connectionStatus: state.connectionStatus,
-    lastEvent: state.lastEvent,
-    connect: state.connect,
-    hydrate: state.hydrate,
-  }));
+  // Use stable selectors for actions to prevent infinite reconnection loops
+  const connectProject = useProjectStore((state) => state.connect);
+  const hydrate = useProjectStore((state) => state.hydrate);
+  
+  // Dynamic state can be separate
+  const connectionStatus = useProjectStore((state) => state.connectionStatus);
+  const lastEvent = useProjectStore((state) => state.lastEvent);
 
+  const hasConnected = useRef(false);
   useEffect(() => {
+    if (hasConnected.current) return;
+    hasConnected.current = true;
+    
     connectProject({ projectId, wsBase });
     hydrate();
   }, [connectProject, hydrate, projectId, wsBase]);
@@ -325,15 +330,38 @@ export default function AppShell() {
     updateFileContent('/logs/training.log', (prev) => (prev || '') + `[${time}] [AI] ${text}\n`);
   };
 
-  // Log backend WebSocket events for visibility
+  // Orchestration: React to backend events to move the pipeline forward (Task 1.4)
   useEffect(() => {
-    if (!lastEvent) return;
-    const tag = lastEvent.event?.name ?? lastEvent.type ?? 'EVENT';
-    const payloadPreview = lastEvent.event?.payload ? JSON.stringify(lastEvent.event.payload).slice(0, 300) : '';
-    appendWsLog(tag, payloadPreview);
-  }, [lastEvent]);
+    if (!lastEvent || !lastEvent.event) return;
+    const { name, payload } = lastEvent.event as any;
 
-  const handleSendChangeRequest = (text: string) => {
+    // 1. After intent is parsed, try to auto-ingest data if a hint was found
+    if (name === 'PROMPT_PARSED' && payload?.dataset_hint) {
+      const triggerIngest = async () => {
+        try {
+          appendWsLog('INGEST_AUTO', `Triggering auto-ingest for: ${payload.dataset_hint}`);
+          const res = await fetch(joinUrl(apiBase, `/api/projects/${projectId}/ingest/auto`), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ dataset_hint: payload.dataset_hint }),
+          });
+          if (!res.ok) throw new Error(`Ingest failed: ${res.status}`);
+          const data = await res.json();
+          appendWsLog('INGEST_RESULT', JSON.stringify(data));
+        } catch (err) {
+          appendWsLog('INGEST_ERROR', err instanceof Error ? err.message : String(err));
+        }
+      };
+      triggerIngest();
+    }
+
+    // 2. Log events for visibility
+    const tag = (name as string) ?? (lastEvent as any).type ?? 'EVENT';
+    const payloadPreview = payload ? JSON.stringify(payload).slice(0, 300) : '';
+    appendWsLog(tag, payloadPreview);
+  }, [lastEvent, apiBase, projectId]);
+
+  const handleSendChangeRequest = async (text: string) => {
     if (!text.trim()) return;
     const trimmed = text.trim();
     const now = new Date().toISOString();
@@ -356,27 +384,67 @@ export default function AppShell() {
       ],
     });
 
-    if (aiReplyTimerRef.current) window.clearTimeout(aiReplyTimerRef.current);
-    aiReplyTimerRef.current = window.setTimeout(() => {
-      const reply =
-        "Got it. I’ll take that into account. If you want, open + to adjust constraints or add datasets.";
-      const at = new Date().toISOString();
-      const aiMessage: ChatMessage = {
-        id: `msg_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-        role: 'ai',
-        text: reply,
-        at,
-      };
-      appendAiLog(reply);
-      setSession((prev) => {
-        if (!prev) return prev;
-        const nextHistory = [
-          ...((prev.chatHistory ?? []) as ChatMessage[]),
-          aiMessage,
-        ];
-        return { ...prev, aiThinking: false, chatHistory: nextHistory };
+    try {
+      // If we are at the initial stage, this message is likely the target/intent
+      if (useProjectStore.getState().currentStageId === 'PARSE_INTENT') {
+        const res = await fetch(joinUrl(apiBase, `/api/projects/${projectId}/parse`), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: trimmed }),
+        });
+        
+        if (!res.ok) throw new Error(`Parse failed: ${res.status}`);
+        const data = await res.json();
+        
+        const aiMessage: ChatMessage = {
+          id: `msg_${Date.now()}_AI`,
+          role: 'ai',
+          text: `I've analyzed your request. I'll focus on ${data.payload.task_type}${data.payload.target ? ` targeting ${data.payload.target}` : ''}. I'm searching for relevant datasets now.`,
+          at: new Date().toISOString(),
+        };
+        
+        appendAiLog(aiMessage.text);
+        patchSession({
+          aiThinking: false,
+          chatHistory: [
+            ...((session?.chatHistory ?? []) as ChatMessage[]),
+            userMessage,
+            aiMessage,
+          ],
+        });
+      } else {
+        // Generic follow-up or command handling could go here
+        // For now, we still show a receipt message but without the fake delay
+        const reply = "I've received your feedback. I'll adjust the pipeline accordingly.";
+        const at = new Date().toISOString();
+        const aiMessage: ChatMessage = {
+          id: `msg_${Date.now()}_AI`,
+          role: 'ai',
+          text: reply,
+          at,
+        };
+        appendAiLog(reply);
+        patchSession({
+          aiThinking: false,
+          chatHistory: [
+            ...((session?.chatHistory ?? []) as ChatMessage[]),
+            userMessage,
+            aiMessage,
+          ],
+        });
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      appendAiLog(`Error: ${errorMsg}`);
+      patchSession({
+        aiThinking: false,
+        chatHistory: [
+          ...((session?.chatHistory ?? []) as ChatMessage[]),
+          userMessage,
+          { id: `err_${Date.now()}`, role: 'ai', text: `Sorry, I encountered an error: ${errorMsg}`, at: new Date().toISOString() }
+        ],
       });
-    }, 900);
+    }
   };
 
   useEffect(() => {
@@ -396,13 +464,35 @@ export default function AppShell() {
   const [activeTabId, setActiveTabId] = useLocalStorageState('activeTabId', 'preview');
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
 
-  // Auto-switch to preview when running
-  const handleRunPipeline = () => {
+  // Map logical "Run" to appropriate backend action based on stage
+  const handleRunPipeline = async () => {
       setActiveTabId('preview');
-      // If user reruns after READY, we show BUILDING state again.
-      if (session && session.status === 'ready') {
-        setSession({ ...session, status: 'building' });
+      const currentStage = useProjectStore.getState().currentStageId;
+      
+      // If we are at the start and have a goal prompt but haven't parsed it yet
+      if (currentStage === 'PARSE_INTENT' && session?.goalPrompt) {
+        handleSendChangeRequest(session.goalPrompt);
+        return;
       }
+
+      // If we are at the TRAIN stage, trigger real training
+      if (currentStage === 'TRAIN') {
+        try {
+          // Defaulting to tabular for now as a generic entry point
+          // In a real app we'd check task_type from state
+          appendWsLog('TRAIN_START', 'Triggering backend training...');
+          const res = await fetch(joinUrl(apiBase, `/api/projects/${projectId}/train/tabular`), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target: 'target' }), // Placeholder target
+          });
+          if (!res.ok) throw new Error(`Training failed: ${res.status}`);
+          appendWsLog('TRAIN_STARTED', 'Backend training initiated successfully');
+        } catch (err) {
+          appendWsLog('TRAIN_ERROR', err instanceof Error ? err.message : String(err));
+        }
+      }
+
       runPipeline();
   };
 
