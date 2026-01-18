@@ -593,39 +593,90 @@ export default function RealBackendLoader({ session, onComplete, updateFileConte
                           </div>
                         ) : eventName === 'MODEL_CANDIDATES' && hasModels ? (
                           /* Special rendering for MODEL_CANDIDATES with models */
-                          <div className="mt-3 space-y-2">
-                            <p className="text-sm text-replit-text mb-2">
-                              Recommended {modelsArray.length} model{modelsArray.length !== 1 ? 's' : ''}. Click to select:
-                            </p>
-                            {modelsArray.map((model: any, modelIdx: number) => (
-                              <button
-                                key={modelIdx}
-                                onClick={() => handleSelectModel(model.id)}
-                                disabled={selectedModelId === model.id}
-                                className={`w-full text-left p-3 rounded border transition-colors ${
-                                  selectedModelId === model.id
-                                    ? 'bg-green-500/20 border-green-500 cursor-default'
-                                    : 'bg-replit-surface hover:bg-replit-surface/80 border-replit-border hover:border-green-500/50'
-                                }`}
-                              >
-                                <div className="font-medium text-replit-text">
-                                  {model.name || model.id || 'Unknown Model'}
+                          <div className="mt-3 space-y-3">
+                            {/* Recommended model (first one) - BIGGER */}
+                            {modelsArray[0] && (
+                              <div>
+                                <div className="flex items-center gap-2 mb-2">
+                                  <span className="text-sm font-semibold text-green-400">⭐ RECOMMENDED</span>
+                                  <span className="text-xs text-replit-textMuted">(Best for your task)</span>
                                 </div>
-                                {model.why && (
-                                  <div className="text-xs text-replit-textMuted mt-1">
-                                    {model.why}
+                                <button
+                                  onClick={() => handleSelectModel(modelsArray[0].id)}
+                                  disabled={selectedModelId === modelsArray[0].id}
+                                  className={`w-full text-left p-4 rounded-lg border-2 transition-all ${
+                                    selectedModelId === modelsArray[0].id
+                                      ? 'bg-green-500/20 border-green-500 cursor-default shadow-lg shadow-green-500/20'
+                                      : 'bg-gradient-to-br from-green-500/10 to-blue-500/10 border-green-500/50 hover:border-green-500 hover:shadow-lg hover:shadow-green-500/30'
+                                  }`}
+                                >
+                                  <div className="flex items-start justify-between">
+                                    <div className="flex-1">
+                                      <div className="text-lg font-bold text-replit-text">
+                                        {modelsArray[0].name || modelsArray[0].id || 'Unknown Model'}
+                                      </div>
+                                      {modelsArray[0].why && (
+                                        <div className="text-sm text-replit-textMuted mt-2 leading-relaxed">
+                                          {modelsArray[0].why}
+                                        </div>
+                                      )}
+                                      {modelsArray[0].family && (
+                                        <div className="inline-block px-2 py-1 text-xs text-purple-400 bg-purple-400/10 rounded mt-2">
+                                          {modelsArray[0].family}
+                                        </div>
+                                      )}
+                                    </div>
+                                    {selectedModelId === modelsArray[0].id && (
+                                      <div className="text-2xl text-green-400 ml-3">✓</div>
+                                    )}
                                   </div>
-                                )}
-                                {model.family && (
-                                  <div className="text-xs text-purple-400 mt-1">
-                                    Type: {model.family}
-                                  </div>
-                                )}
-                                {selectedModelId === model.id && (
-                                  <div className="text-xs text-green-400 mt-2">✓ Selected</div>
-                                )}
-                              </button>
-                            ))}
+                                </button>
+                              </div>
+                            )}
+                            
+                            {/* Other models - smaller, collapsible */}
+                            {modelsArray.length > 1 && (
+                              <div>
+                                <p className="text-xs text-replit-textMuted mb-2">
+                                  Other options ({modelsArray.length - 1}):
+                                </p>
+                                <div className="space-y-2">
+                                  {modelsArray.slice(1).map((model: any, modelIdx: number) => (
+                                    <button
+                                      key={modelIdx}
+                                      onClick={() => handleSelectModel(model.id)}
+                                      disabled={selectedModelId === model.id}
+                                      className={`w-full text-left p-2.5 rounded border transition-colors ${
+                                        selectedModelId === model.id
+                                          ? 'bg-green-500/20 border-green-500 cursor-default'
+                                          : 'bg-replit-surface hover:bg-replit-surface/80 border-replit-border hover:border-blue-500/50'
+                                      }`}
+                                    >
+                                      <div className="flex items-start justify-between">
+                                        <div className="flex-1">
+                                          <div className="font-medium text-sm text-replit-text">
+                                            {model.name || model.id || 'Unknown Model'}
+                                          </div>
+                                          {model.why && (
+                                            <div className="text-xs text-replit-textMuted mt-1">
+                                              {model.why}
+                                            </div>
+                                          )}
+                                          {model.family && (
+                                            <div className="text-xs text-purple-400/70 mt-1">
+                                              {model.family}
+                                            </div>
+                                          )}
+                                        </div>
+                                        {selectedModelId === model.id && (
+                                          <div className="text-sm text-green-400 ml-2">✓</div>
+                                        )}
+                                      </div>
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         ) : (
                           <pre className="text-xs text-replit-textMuted mt-2 overflow-x-auto">
