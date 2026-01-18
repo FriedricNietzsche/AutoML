@@ -23,6 +23,8 @@ export default function RealBackendLoader({ session, onComplete, updateFileConte
   const [isConfirming, setIsConfirming] = useState(false);
   const [selectedDatasetId, setSelectedDatasetId] = useState<string | null>(null);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
+  const [showUploadDialog, setShowUploadDialog] = useState(false);
+  const [uploadingFile, setUploadingFile] = useState(false);
 
   const {
     connectionStatus,
@@ -125,10 +127,50 @@ export default function RealBackendLoader({ session, onComplete, updateFileConte
       const result = await response.json();
       console.log('[RealBackendLoader] Dataset selected:', result);
       
+      // Check if upload is required
+      if (result.requires_upload) {
+        setShowUploadDialog(true);
+      }
+      
     } catch (err) {
       console.error('[RealBackendLoader] Failed to select dataset:', err);
       setErrorDetails(err instanceof Error ? err.message : 'Failed to select dataset');
       setSelectedDatasetId(null);
+    }
+  }, [projectId]);
+
+  // Handle file upload
+  const handleFileUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      setUploadingFile(true);
+      console.log('[RealBackendLoader] Uploading file:', file.name);
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const response = await fetch(`http://localhost:8000/api/projects/${projectId}/upload`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to upload file: ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      console.log('[RealBackendLoader] File uploaded:', result);
+      
+      setShowUploadDialog(false);
+      setSelectedDatasetId('uploaded');
+      
+    } catch (err) {
+      console.error('[RealBackendLoader] Upload failed:', err);
+      setErrorDetails(err instanceof Error ? err.message : 'Failed to upload file');
+    } finally {
+      setUploadingFile(false);
     }
   }, [projectId]);
 
@@ -255,6 +297,61 @@ export default function RealBackendLoader({ session, onComplete, updateFileConte
   // Connected - show pipeline status
   return (
     <div className="h-full flex flex-col bg-replit-bg overflow-hidden">
+      {/* Upload Dialog */}
+      {showUploadDialog && (
+        <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-replit-surface border border-replit-border rounded-lg p-8 max-w-md w-full mx-4">
+            <h3 className="text-xl font-bold text-replit-text mb-4">Upload CSV Dataset</h3>
+            <p className="text-sm text-replit-textMuted mb-6">
+              Select a CSV file from your computer to use as your dataset.
+            </p>
+            
+            <div className="border-2 border-dashed border-replit-border rounded-lg p-8 text-center mb-4 hover:border-blue-500/50 transition-colors">
+              <input
+                type="file"
+                accept=".csv"
+                onChange={handleFileUpload}
+                disabled={uploadingFile}
+                className="hidden"
+                id="csv-upload"
+              />
+              <label
+                htmlFor="csv-upload"
+                className="cursor-pointer flex flex-col items-center gap-3"
+              >
+                {uploadingFile ? (
+                  <>
+                    <Loader2 className="w-12 h-12 text-blue-500 animate-spin" />
+                    <span className="text-replit-text">Uploading...</span>
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-12 h-12 text-replit-textMuted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                    </svg>
+                    <span className="text-replit-text font-medium">Click to browse</span>
+                    <span className="text-xs text-replit-textMuted">or drag and drop your CSV file here</span>
+                  </>
+                )}
+              </label>
+            </div>
+            
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  setShowUploadDialog(false);
+                  setSelectedDatasetId(null);
+                }}
+                disabled={uploadingFile}
+                className="flex-1 px-4 py-2 bg-replit-surface hover:bg-replit-surfaceHover border border-replit-border text-replit-text rounded-lg transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex-shrink-0 bg-replit-surface/60 border-b border-replit-border px-6 py-4">
         <div className="flex items-center justify-between">
@@ -453,22 +550,44 @@ export default function RealBackendLoader({ session, onComplete, updateFileConte
                                     : 'bg-replit-surface hover:bg-replit-surface/80 border-replit-border hover:border-blue-500/50'
                                 }`}
                               >
-                                <div className="font-medium text-replit-text">
-                                  {dataset.name || dataset.id || 'Unknown Dataset'}
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="flex-1">
+                                    <div className="font-medium text-replit-text">
+                                      {dataset.name || dataset.id || 'Unknown Dataset'}
+                                    </div>
+                                    {dataset.description && (
+                                      <div className="text-xs text-replit-textMuted mt-1">
+                                        {dataset.description}
+                                      </div>
+                                    )}
+                                    <div className="flex items-center gap-3 mt-2">
+                                      {dataset.downloads && (
+                                        <div className="text-xs text-green-400">
+                                          📥 {dataset.downloads.toLocaleString()} downloads
+                                        </div>
+                                      )}
+                                      {dataset.url && (
+                                        <a
+                                          href={dataset.url}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          onClick={(e) => e.stopPropagation()}
+                                          className="text-xs text-blue-400 hover:text-blue-300 underline flex items-center gap-1"
+                                        >
+                                          🔗 View on HuggingFace
+                                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                          </svg>
+                                        </a>
+                                      )}
+                                    </div>
+                                  </div>
+                                  {selectedDatasetId === (dataset.id || dataset.full_name) && (
+                                    <div className="text-blue-400 flex-shrink-0">
+                                      <CheckCircle2 className="w-5 h-5" />
+                                    </div>
+                                  )}
                                 </div>
-                                {dataset.description && (
-                                  <div className="text-xs text-replit-textMuted mt-1">
-                                    {dataset.description}
-                                  </div>
-                                )}
-                                {dataset.downloads && (
-                                  <div className="text-xs text-green-400 mt-1">
-                                    {dataset.downloads.toLocaleString()} downloads
-                                  </div>
-                                )}
-                                {selectedDatasetId === (dataset.id || dataset.full_name) && (
-                                  <div className="text-xs text-blue-400 mt-2">✓ Selected</div>
-                                )}
                               </button>
                             ))}
                           </div>

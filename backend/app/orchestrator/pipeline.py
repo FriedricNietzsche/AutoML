@@ -4,13 +4,15 @@ Automatically triggers agents when stages transition to IN_PROGRESS
 Handles the complete flow: PARSE_INTENT → DATA_SOURCE → ... → EXPORT
 """
 import asyncio
+import os
 from typing import Any, Dict, Optional
+from pathlib import Path
 
 from app.agents.prompt_parser import PromptParserAgent
 from app.agents.dataset_finder import DatasetFinderAgent
 from app.agents.preprocess import PreprocessAgent
 from app.agents.model_selector import ModelSelectorAgent
-from app.agents.trainer import TrainerAgent
+from app.ml.trainer_factory import TrainerFactory  # NEW: Smart model selection
 from app.agents.verifier import VerifierAgent
 from app.agents.reporter import ReporterAgent
 from app.events.bus import event_bus
@@ -313,8 +315,12 @@ class PipelineOrchestrator:
                 df = pd.read_csv(dataset_path)
                 print(f"[PREPROCESS] Loaded {len(df)} rows")
                 
-                # Apply preprocessing
-                df_processed = agent.preprocess(df)
+                # Detect target column
+                target_column = "label" if "label" in df.columns else df.columns[-1]
+                print(f"[PREPROCESS] Target column: {target_column}")
+                
+                # Apply preprocessing with target column awareness
+                df_processed = agent.preprocess(df, target_column=target_column)
                 
                 # Save processed data
                 from pathlib import Path
@@ -412,47 +418,24 @@ class PipelineOrchestrator:
         print("[MODEL_SELECT] ✅ Complete")
     
     async def _execute_train(self, project_id: str) -> None:
-        """Stage 6: Train the selected model"""
+        """Stage 6: Train the selected model with proper trainer (text/image/tabular)"""
+        import pandas as pd
+        from pathlib import Path
+        import joblib
+        
         context = self._get_context(project_id)
         selected_model = context.get("selected_model")
         processed_data_path = context.get("processed_data_path")
         parsed_intent = context.get("parsed_intent", {})
         task_type = parsed_intent.get("task_type", "classification")
         selected_dataset = context.get("selected_dataset", {})
-        dataset_name = selected_dataset.get("name", "")
+        dataset_name = selected_dataset.get("name", "Unknown")
+        original_data_path = selected_dataset.get("path")  # Original data BEFORE preprocessing
         
-        # Check if this is an image dataset
-        is_image_dataset = any(term in dataset_name.lower() for term in ["cat", "dog", "cifar", "mnist", "fashion", "image"]) or task_type == "vision"
-        
-        if is_image_dataset:
-            # Show warning for image datasets
-            await event_bus.publish_event(
-                project_id=project_id,
-                event_name=EventType.TRAIN_PROGRESS,
-                payload={
-                    "progress": 0,
-                    "message": "⚠️ WARNING: Image dataset detected. Training sklearn model on image metadata only (not actual pixels). For real image classification, use transfer learning with PyTorch/TensorFlow."
-                },
-                stage_id=StageID.TRAIN,
-                stage_status=StageStatus.IN_PROGRESS,
-            )
-            print("[TRAIN] ⚠️ WARNING: Training on image metadata, not actual image data")
-        
-        print("[1/6] Creating TrainerAgent...")
-        agent = TrainerAgent()
-        
-        # Initialize model
-        model_id = selected_model.get("id", "rf") if selected_model else "rf"
-        agent.initialize_model(model_id, task_type)
-        
-        print("[2/6] Starting training...")
-        await event_bus.publish_event(
-            project_id=project_id,
-            event_name=EventType.TRAIN_PROGRESS,
-            payload={"progress": 0, "message": "Training started"},
-            stage_id=StageID.TRAIN,
-            stage_status=StageStatus.IN_PROGRESS,
-        )
+        print(f"[TRAIN] Starting training for {dataset_name}")
+        print(f"[TRAIN] Task type: {task_type}")
+        print(f"[TRAIN] Original data: {original_data_path}")
+        print(f"[TRAIN] Processed data: {processed_data_path}")
         
         # Progress callback
         async def report_progress(progress: int, message: str):
@@ -463,61 +446,263 @@ class PipelineOrchestrator:
                 stage_id=StageID.TRAIN,
                 stage_status=StageStatus.IN_PROGRESS,
             )
-            await asyncio.sleep(0.1)  # Small delay for frontend to process
+            await asyncio.sleep(0.1)
         
-        # Train the model
-        if processed_data_path:
-            try:
-                print(f"[3/6] Training on {processed_data_path}...")
-                metrics = await agent.train(
-                    data_path=processed_data_path,
-                    progress_callback=report_progress
-                )
-                
-                # Save trained model
-                from pathlib import Path
-                model_path = Path(processed_data_path).parent / "trained_model.joblib"
-                agent.save_model(str(model_path))
-                
-                async with self._lock:
-                    context["trained_model_path"] = str(model_path)
-                    context["training_metrics"] = metrics
-                
-                print(f"[4/6] Training complete - Test score: {metrics.get('test_score', 'N/A')}")
-                
-            except Exception as e:
-                print(f"[TRAIN] ❌ Error during training: {e}")
-                metrics = {"error": str(e), "test_score": 0.0}
-                async with self._lock:
-                    context["training_metrics"] = metrics
-        else:
-            # Mock training if no data
-            print("[3/6] No processed data - simulating training...")
-            for progress in [25, 50, 75, 100]:
-                await report_progress(progress, f"Training {progress}% complete")
-                await asyncio.sleep(0.5)
+        if not processed_data_path:
+            print("[TRAIN] ❌ No processed data available")
+            await report_progress(100, "Training skipped - no data")
+            return
+        
+        try:
+            # Load ORIGINAL data to detect task type (before preprocessing destroyed text)
+            original_df = pd.read_csv(original_data_path) if original_data_path else None
+            processed_df = pd.read_csv(processed_data_path)
             
-            metrics = {"accuracy": 0.95, "test_score": 0.95, "train_score": 0.97}
+            print(f"[TRAIN] Loaded original data: {original_df.shape if original_df is not None else 'N/A'}")
+            print(f"[TRAIN] Loaded processed data: {processed_df.shape}")
+            
+            await report_progress(10, f"Loaded {len(processed_df)} samples...")
+            
+            # Use ORIGINAL data for detection (before preprocessing) - DEFINE THIS FIRST
+            df_for_detection = original_df if original_df is not None else processed_df
+            
+            # Get target column from parsed intent
+            target_column = parsed_intent.get("target", "label")
+            
+            # Fallback: if target not in dataframe, try common names
+            if target_column not in df_for_detection.columns:
+                if "label" in df_for_detection.columns:
+                    target_column = "label"
+                elif "Survived" in df_for_detection.columns:
+                    target_column = "Survived"
+                elif "survived" in df_for_detection.columns:
+                    target_column = "survived"
+                else:
+                    # Last resort: use last column
+                    target_column = df_for_detection.columns[-1]
+            
+            print(f"[TRAIN] Target column: {target_column}")
+            
+            # Detect task type from ORIGINAL data (before label encoding destroyed text)
+            actual_task_type = TrainerFactory.detect_task_type(df_for_detection, target_column)
+            
+            print(f"[TRAIN] Detected task type: {actual_task_type}")
+            await report_progress(20, f"Detected: {actual_task_type}")
+            
+            # Determine number of classes for classification (use ORIGINAL data to get correct count)
+            num_classes = 2
+            if actual_task_type in ["text_classification", "image_classification", "tabular_classification"]:
+                # Count classes from ORIGINAL data (before label encoding)
+                num_classes = original_df[target_column].nunique() if original_df is not None else processed_df[target_column].nunique()
+                print(f"[TRAIN] Number of classes: {num_classes}")
+            
+            # Map model IDs to trainer names (task-aware)
+            model_id = selected_model.get("id", "auto") if selected_model else "auto"
+            
+            # For TEXT classification, always use transformers (ignore sklearn model selections)
+            if actual_task_type == "text_classification":
+                model_name = "auto"  # Will default to DistilBERT in SentimentClassifier
+                print(f"[TRAIN] Text classification detected - using transformer model (DistilBERT)")
+            else:
+                # For tabular tasks, map sklearn model IDs to trainer names
+                model_name_map = {
+                    "rf_clf": "random_forest",  # Random Forest Classifier
+                    "xgb_clf": "xgboost",        # XGBoost Classifier
+                    "lr_clf": "auto",            # Logistic Regression → use auto (XGBoost)
+                    "rf_reg": "random_forest",   # Random Forest Regressor
+                    "xgb_reg": "xgboost",        # XGBoost Regressor
+                    "lr_reg": "auto",            # Linear Regression → use auto (XGBoost)
+                }
+                model_name = model_name_map.get(model_id, model_id)
+            
+            print(f"[TRAIN] Creating trainer (model_id={model_id}, model_name={model_name}, task={actual_task_type})...")
+            
+            await report_progress(30, f"Initializing {model_name} trainer...")
+            
+            # Check if cloud training is enabled and available
+            use_cloud_training = os.getenv("USE_VULTR_TRAINING", "false").lower() == "true"
+            vultr_api_key = os.getenv("VULTR_API_KEY")
+            
+            metrics = None
+            model_path = None
+            trainer = None
+            
+            if use_cloud_training and vultr_api_key and actual_task_type == "text_classification":
+                # Use Vultr cloud training for text classification
+                print(f"[TRAIN] ☁️ Cloud training enabled - using Vultr GPU instance")
+                await report_progress(35, "Provisioning Vultr GPU instance...")
+                
+                try:
+                    from app.cloud.vultr_trainer import VultrTrainer
+                    
+                    cloud_trainer = VultrTrainer(api_key=vultr_api_key)
+                    
+                    # Use original data path for cloud training
+                    cloud_result = await cloud_trainer.train_on_cloud(
+                        task_type=actual_task_type,
+                        train_data_path=original_data_path,
+                        model_name="distilbert-base-uncased",
+                        num_classes=num_classes,
+                        hyperparameters={
+                            "num_epochs": 3,
+                            "batch_size": 16,  # Larger batch size on GPU
+                            "learning_rate": 2e-5
+                        }
+                    )
+                    
+                    metrics = cloud_result["metrics"]
+                    cloud_model_path = cloud_result["model_path"]
+                    
+                    # Copy cloud model to project directory
+                    import shutil
+                    model_path = Path(f"{Path(original_data_path).parent}/model")
+                    if model_path.exists():
+                        shutil.rmtree(model_path)
+                    shutil.copytree(cloud_model_path, model_path)
+                    
+                    print(f"[TRAIN] ✅ Cloud training complete! Model saved to {model_path}")
+                    
+                except Exception as cloud_error:
+                    print(f"[TRAIN] ⚠️ Cloud training failed: {cloud_error}")
+                    print(f"[TRAIN] Falling back to local training...")
+                    use_cloud_training = False
+            
+            if not use_cloud_training:
+                # Local training (existing code)
+                trainer = TrainerFactory.get_trainer(
+                    task_type=actual_task_type,
+                    model_name=model_name,
+                    num_classes=num_classes
+                )
+            
+            # Only proceed with local training if we have a trainer
+            if trainer is not None:
+                # Train the model
+                print(f"[TRAIN] Training {actual_task_type} model...")
+                await report_progress(40, f"Training {actual_task_type} model (this may take a few minutes)...")
+                
+                # Run training in executor to avoid blocking
+                import concurrent.futures
+                loop = asyncio.get_event_loop()
+                
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    if actual_task_type == "text_classification":
+                        # Text classification with transformers - use ORIGINAL data with text
+                        text_col = None
+                        for col in original_df.columns:
+                            if col != target_column and original_df[col].dtype == 'object':
+                                unique_ratio = original_df[col].nunique() / len(original_df)
+                                avg_length = original_df[col].astype(str).str.len().mean()
+                                if unique_ratio > 0.9 and avg_length > 50:
+                                    text_col = col
+                                    break
+                        
+                        if text_col:
+                            print(f"[TRAIN] Found text column: {text_col}")
+                            train_texts = original_df[text_col].tolist()
+                            train_labels = original_df[target_column].tolist()
+                            
+                            # Check label distribution
+                            unique_labels_in_data = original_df[target_column].unique()
+                            print(f"[TRAIN] Unique labels in full dataset: {unique_labels_in_data} (count: {len(unique_labels_in_data)})")
+                            
+                            # Split into train/val
+                            split_idx = int(len(train_texts) * 0.8)
+                            
+                            def train_text_model():
+                                return trainer.train(
+                                    train_texts=train_texts[:split_idx],
+                                    train_labels=train_labels[:split_idx],
+                                    val_texts=train_texts[split_idx:],
+                                    val_labels=train_labels[split_idx:],
+                                    num_epochs=3  # Fast training for demo
+                                )
+                            
+                            metrics = await loop.run_in_executor(executor, train_text_model)
+                        else:
+                            raise ValueError("No text column found for text classification")
+                    
+                    elif actual_task_type in ["tabular_classification", "tabular_regression"]:
+                        # Tabular with XGBoost/RandomForest - use PROCESSED data (scaled/encoded)
+                        X = processed_df.drop(columns=[target_column])
+                        y = processed_df[target_column]
+                        
+                        from sklearn.model_selection import train_test_split
+                        X_train, X_val, y_train, y_val = train_test_split(
+                            X, y, test_size=0.2, random_state=42,
+                            stratify=y if actual_task_type == "tabular_classification" else None
+                        )
+                        
+                        def train_tabular_model():
+                            return trainer.train(
+                                X_train=X_train,
+                                y_train=y_train,
+                                X_val=X_val,
+                                y_val=y_val
+                            )
+                        
+                        metrics = await loop.run_in_executor(executor, train_tabular_model)
+                    
+                    elif actual_task_type == "image_classification":
+                        # Image classification with transfer learning
+                        # TODO: Implement image path extraction
+                        raise NotImplementedError("Image classification training not yet implemented in pipeline")
+                    
+                    else:
+                        raise ValueError(f"Unknown task type: {actual_task_type}")
+            
+            await report_progress(80, "Training complete, saving model...")
+            
+            # Save trained model (only if local training was used)
+            if trainer is not None and model_path is None:
+                model_dir = Path(processed_data_path).parent
+                model_path = model_dir / "trained_model.joblib"
+                
+                print(f"[TRAIN] Saving model to {model_path}...")
+                trainer.save(model_path)
+            
+            # Ensure we have metrics
+            if metrics is None:
+                raise ValueError("Training did not produce metrics")
+            
+            # Store metrics
+            training_metrics = {
+                "model_name": trainer.__class__.__name__ if trainer else "CloudModel",
+                "task_type": actual_task_type,
+                "dataset": dataset_name,
+                **metrics
+            }
+            
             async with self._lock:
-                context["training_metrics"] = metrics
-        
-        print("[5/6] Publishing TRAIN_COMPLETE event...")
-        await event_bus.publish_event(
-            project_id=project_id,
-            event_name=EventType.TRAIN_PROGRESS,
-            payload={"progress": 100, "metrics": metrics},
-            stage_id=StageID.TRAIN,
-            stage_status=StageStatus.IN_PROGRESS,
-        )
-        
-        score = metrics.get("test_score", metrics.get("accuracy", 0.0))
-        print("[6/6] Waiting for confirmation...")
-        await conductor.waiting_for_confirmation(
-            project_id=project_id,
-            stage_id=StageID.TRAIN,
-            summary=f"Training complete! Test score: {score:.1%}",
-            next_actions=["Confirm to evaluate model"]
-        )
+                context["trained_model_path"] = str(model_path)
+                context["training_metrics"] = training_metrics
+                context["trainer_class"] = trainer.__class__.__name__ if trainer else "CloudModel"
+            
+            print(f"[TRAIN] ✅ Training complete!")
+            print(f"[TRAIN] Metrics: {training_metrics}")
+            
+            await report_progress(100, f"Training complete! Accuracy: {metrics.get('val_accuracy', metrics.get('train_accuracy', 0)):.1%}")
+            
+            # Show summary
+            score = metrics.get("val_accuracy", metrics.get("train_accuracy", 0.0))
+            await conductor.waiting_for_confirmation(
+                project_id=project_id,
+                stage_id=StageID.TRAIN,
+                summary=f"✅ Training complete!\nModel: {trainer.__class__.__name__}\nAccuracy: {score:.1%}",
+                next_actions=["Confirm to evaluate model"]
+            )
+            
+        except Exception as e:
+            print(f"[TRAIN] ❌ Error during training: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            await report_progress(0, f"Training failed: {str(e)}")
+            
+            async with self._lock:
+                context["training_metrics"] = {"error": str(e)}
+            
+            raise
         
         print("[TRAIN] ✅ Complete")
     

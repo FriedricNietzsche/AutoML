@@ -1,36 +1,30 @@
 """
-DatasetFinderAgent - Provides curated datasets with optional LLM ranking
-Uses curated datasets for common tasks to ensure quality recommendations
+DatasetFinderAgent - Search HuggingFace datasets using OpenRouter AI
+Uses OpenRouter for intelligent dataset search and ranking
 """
 from typing import List, Dict, Any
 import os
 import json
-
-try:
-    import google.generativeai as genai
-    GENAI_AVAILABLE = True
-except ImportError:
-    GENAI_AVAILABLE = False
+import requests
+from huggingface_hub import HfApi
 
 
 class DatasetFinderAgent:
     def __init__(self):
-        # Initialize Gemini for intelligent dataset curation (optional)
-        self.llm = None
-        if GENAI_AVAILABLE:
-            gemini_key = os.getenv("GEMINI_API_KEY")
-            if gemini_key:
-                genai.configure(api_key=gemini_key)
-                self.llm = genai.GenerativeModel('gemini-2.0-flash-exp')
-                print("[DatasetFinder] ✅ LLM-powered ranking enabled")
-            else:
-                print("[DatasetFinder] ℹ️ No Gemini key - using curated datasets")
-        else:
-            print("[DatasetFinder] ℹ️ google-generativeai not installed - using curated datasets")
+        # Initialize OpenRouter for intelligent dataset search
+        self.openrouter_key = os.getenv("OPENROUTER_API_KEY")
+        if not self.openrouter_key:
+            raise ValueError("OPENROUTER_API_KEY environment variable is required")
+        
+        # Get model from env or use default
+        self.model = os.getenv("OPENROUTER_MODEL", "google/gemini-2.0-flash-exp:free")
+        
+        self.hf_api = HfApi()
+        print(f"[DatasetFinder] ✅ OpenRouter AI enabled (model: {self.model})")
 
     def find_datasets(self, user_input: str, task_type: str = None, limit: int = 10) -> List[Dict[str, Any]]:
         """
-        Find relevant datasets using curated lists with optional LLM ranking.
+        Find relevant datasets from HuggingFace using AI-powered search.
         
         Args:
             user_input: User's prompt or description
@@ -38,20 +32,32 @@ class DatasetFinderAgent:
             limit: Maximum number of datasets to return
             
         Returns:
-            List of dataset dictionaries with id, name, description, etc.
+            List of dataset dictionaries with id, name, description, url, etc.
         """
-        print(f"[DatasetFinder] 🔍 Finding datasets for: {user_input[:100]}...")
+        print(f"[DatasetFinder] 🔍 AI-powered search for: {user_input[:100]}...")
         print(f"[DatasetFinder] Task type: {task_type}")
         
-        # Get curated datasets based on task
-        curated = self._get_curated_datasets_for_task(user_input, task_type)
+        # Use OpenRouter to get dataset search query
+        search_query = self._generate_search_query(user_input, task_type)
+        print(f"[DatasetFinder] 🔎 Search query: {search_query}")
         
-        if self.llm and len(curated) > limit:
-            # Use LLM to rank and select the best datasets
-            selected = self._llm_select_datasets(user_input, task_type, curated, limit)
-        else:
-            # Just return curated datasets in order
-            selected = curated[:limit]
+        # Search HuggingFace
+        hf_results = self._search_huggingface(search_query, limit=50)
+        
+        # Use AI to rank and select best datasets
+        selected = self._ai_rank_datasets(user_input, task_type, hf_results, limit)
+        
+        # ALWAYS add "Upload CSV" option at the end
+        selected.append({
+            "id": "upload_csv",
+            "name": "📤 Upload Your CSV File",
+            "full_name": "custom_upload",
+            "description": "Click here to upload your own CSV dataset from your computer",
+            "license": "custom",
+            "url": None,
+            "is_upload_prompt": True,
+            "source": "custom_upload"
+        })
         
         print(f"[DatasetFinder] ✅ Selected {len(selected)} datasets:")
         for i, ds in enumerate(selected, 1):
@@ -59,141 +65,154 @@ class DatasetFinderAgent:
         
         return selected
 
-    def _llm_select_datasets(self, user_input: str, task_type: str, candidates: List[Dict], limit: int) -> List[Dict]:
-        """Use LLM to intelligently select the most relevant datasets"""
+    def _generate_search_query(self, user_input: str, task_type: str) -> str:
+        """Use AI to generate optimal HuggingFace search query"""
         try:
-            prompt = f"""You are a dataset recommendation expert. The user wants to: "{user_input}"
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.openrouter_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://github.com/AutoML",  # Required by OpenRouter
+                    "X-Title": "AutoML Dataset Finder"  # Optional but recommended
+                },
+                json={
+                    "model": self.model,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": f"""Generate a concise HuggingFace dataset search query for this request:
+User wants: {user_input}
 Task type: {task_type}
 
-Here are available datasets:
-{json.dumps([{"name": d["name"], "description": d["description"], "tags": d.get("tags", [])} for d in candidates], indent=2)}
-
-Select the {limit} MOST RELEVANT datasets for this task. Consider:
-1. Data modality (image, text, audio, tabular)
-2. Task type (classification, regression, etc.)
-3. Domain relevance (animals, medical, etc.)
-
-Respond with ONLY a JSON array of dataset names in order of relevance, like: ["dataset1", "dataset2", ...]
+Return ONLY 2-4 keywords separated by spaces. No explanation.
+Examples: "sentiment text", "image classification", "tabular regression"
 """
+                        }
+                    ]
+                },
+                timeout=10
+            )
             
-            response = self.llm.generate_content(prompt)
-            selected_names = json.loads(response.text.strip())
+            if response.status_code == 200:
+                query = response.json()["choices"][0]["message"]["content"].strip()
+                return query
+            else:
+                print(f"[DatasetFinder] ⚠️ OpenRouter error: {response.status_code}")
+                print(f"[DatasetFinder] Response: {response.text}")
+                return task_type or "dataset"
+                
+        except Exception as e:
+            print(f"[DatasetFinder] ⚠️ Query generation error: {e}")
+            return task_type or "dataset"
+
+    def _search_huggingface(self, query: str, limit: int = 50) -> List[Dict]:
+        """Search HuggingFace datasets"""
+        try:
+            results = []
+            for ds in self.hf_api.list_datasets(search=query, limit=limit):
+                # Skip private/gated
+                if getattr(ds, "private", False) or getattr(ds, "gated", False):
+                    continue
+                
+                info = ds.card_data or {}
+                lic_raw = (info.get("license") or "").lower().strip()
+                
+                # Only community licensed or unspecified
+                disallowed = ["apache-2.0", "mit", "cc-by", "gpl", "commercial"]
+                if lic_raw and any(d in lic_raw for d in disallowed):
+                    continue
+                
+                results.append({
+                    "id": ds.id,
+                    "name": ds.id.split("/")[-1].replace("-", " ").title(),
+                    "full_name": ds.id,
+                    "description": getattr(ds, "description", "No description available") or f"Dataset: {ds.id}",
+                    "license": lic_raw or "community",
+                    "url": f"https://huggingface.co/datasets/{ds.id}",
+                    "tags": getattr(ds, "tags", []) or []
+                })
             
-            # Return datasets in the order selected by LLM
-            selected = []
-            for name in selected_names[:limit]:
-                for ds in candidates:
-                    if ds['name'] == name or ds['id'] == name:
-                        selected.append(ds)
-                        break
-            
-            return selected if selected else candidates[:limit]
+            return results
             
         except Exception as e:
-            print(f"[DatasetFinder] ⚠️ LLM selection error: {e}")
-            return candidates[:limit]
+            print(f"[DatasetFinder] ❌ HuggingFace search error: {e}")
+            return []
 
-    def _get_curated_datasets_for_task(self, user_input: str, task_type: str) -> List[Dict[str, Any]]:
-        """Get a curated list of datasets based on detected task/domain"""
-        input_lower = user_input.lower()
-        curated = []
+    def _ai_rank_datasets(self, user_input: str, task_type: str, candidates: List[Dict], limit: int) -> List[Dict]:
+        """Use AI to rank datasets by relevance"""
+        if not candidates:
+            return []
         
-        # ============================================================
-        # IMAGE CLASSIFICATION - DISABLED (Coming Soon!)
-        # ============================================================
-        # Image classification requires CNN/transfer learning with PyTorch/TensorFlow
-        # Current AutoML supports text, tabular, and IMAGE classification!
+        if len(candidates) <= limit:
+            return candidates
         
-        # IMAGE CLASSIFICATION DATASETS (NOW SUPPORTED with PyTorch!)
-        if any(term in input_lower for term in ["image", "photo", "picture", "visual", "vision", "cat", "dog", "animal", "pet", "cifar", "mnist", "face", "object"]):
-            curated.extend([
-                {
-                    "id": "cifar10",
-                    "name": "CIFAR-10",
-                    "full_name": "cifar10",
-                    "description": "60,000 32x32 color images in 10 classes: airplane, automobile, bird, cat, deer, dog, frog, horse, ship, truck.",
-                    "downloads": 1000000,
-                    "likes": 1500,
-                    "tags": ["image-classification", "computer-vision", "multiclass"]
+        try:
+            # Prepare dataset info for AI
+            dataset_info = []
+            for ds in candidates[:30]:  # Limit to avoid token overflow
+                dataset_info.append({
+                    "id": ds["id"],
+                    "name": ds["name"],
+                    "description": ds["description"][:200],
+                    "tags": ds.get("tags", [])[:5]
+                })
+            
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.openrouter_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://github.com/AutoML",  # Required by OpenRouter
+                    "X-Title": "AutoML Dataset Finder"  # Optional but recommended
                 },
-                {
-                    "id": "cats_vs_dogs",
-                    "name": "Cats vs Dogs",
-                    "full_name": "microsoft/cats_vs_dogs",
-                    "description": "25,000 images of cats and dogs for binary classification. Classic computer vision benchmark.",
-                    "downloads": 500000,
-                    "likes": 800,
-                    "tags": ["image-classification", "computer-vision", "binary", "animals"]
+                json={
+                    "model": self.model,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": f"""Rank these HuggingFace datasets by relevance for this task:
+User wants: {user_input}
+Task type: {task_type}
+
+Datasets:
+{json.dumps(dataset_info, indent=2)}
+
+Return ONLY a JSON array of the top {limit} dataset IDs in order of relevance.
+Format: ["dataset-id-1", "dataset-id-2", ...]
+No explanation."""
+                        }
+                    ]
                 },
-                {
-                    "id": "fashion_mnist",
-                    "name": "Fashion MNIST",
-                    "full_name": "fashion_mnist",
-                    "description": "70,000 grayscale images of 10 fashion categories (t-shirt, trouser, dress, coat, etc.). Modern MNIST alternative.",
-                    "downloads": 800000,
-                    "likes": 1000,
-                    "tags": ["image-classification", "computer-vision", "fashion"]
-                },
-            ])
-        
-        # TEXT CLASSIFICATION DATASETS
-        if any(term in input_lower for term in ["text", "sentiment", "review", "nlp", "language", "movie", "news"]):
-            curated.extend([
-                {
-                    "id": "imdb",
-                    "name": "IMDB Movie Reviews",
-                    "full_name": "imdb",
-                    "description": "50,000 movie reviews for sentiment analysis (positive/negative).",
-                    "downloads": 500000,
-                    "likes": 600,
-                    "tags": ["text-classification", "sentiment", "nlp"]
-                },
-                {
-                    "id": "ag_news",
-                    "name": "AG News",
-                    "full_name": "ag_news",
-                    "description": "News articles in 4 classes: World, Sports, Business, Sci/Tech. 120,000 training samples.",
-                    "downloads": 300000,
-                    "likes": 400,
-                    "tags": ["text-classification", "nlp", "news"]
-                },
-            ])
-        
-        # TABULAR/REGRESSION DATASETS
-        if any(term in input_lower for term in ["tabular", "csv", "regression", "predict", "price", "sales", "house", "housing", "titanic", "survival"]):
-            curated.extend([
-                {
-                    "id": "california_housing",
-                    "name": "California Housing",
-                    "full_name": "california_housing",
-                    "description": "Housing prices in California districts. Regression task with 8 features.",
-                    "downloads": 200000,
-                    "likes": 300,
-                    "tags": ["regression", "tabular", "housing"]
-                },
-                {
-                    "id": "titanic",
-                    "name": "Titanic Survival",
-                    "full_name": "titanic",
-                    "description": "Predict survival on the Titanic. Binary classification with passenger data.",
-                    "downloads": 400000,
-                    "likes": 500,
-                    "tags": ["classification", "tabular", "binary"]
-                },
-            ])
-        
-        # If no specific datasets matched, provide helpful examples
-        if not curated:
-            raise ValueError(
-                f"No datasets found for: '{user_input}'\n\n"
-                "✅ Supported AutoML tasks:\n"
-                "  • Text Classification: 'Build a sentiment classifier for movie reviews'\n"
-                "  • Tabular Regression: 'Predict house prices in California'\n"
-                "  • Tabular Classification: 'Predict Titanic passenger survival'\n\n"
-                "🚫 Not yet supported:\n"
-                "  • Image classification (requires CNNs - coming soon!)\n"
-                "  • Time series forecasting\n"
-                "  • Clustering\n"
+                timeout=15
             )
-        
-        return curated
+            
+            if response.status_code == 200:
+                ranked_ids = json.loads(response.json()["choices"][0]["message"]["content"].strip())
+                
+                # Reorder candidates based on AI ranking
+                ranked = []
+                for ds_id in ranked_ids[:limit]:
+                    for ds in candidates:
+                        if ds["id"] == ds_id or ds["full_name"] == ds_id:
+                            ranked.append(ds)
+                            break
+                
+                # Fill remaining slots with top candidates
+                while len(ranked) < limit and len(ranked) < len(candidates):
+                    for ds in candidates:
+                        if ds not in ranked:
+                            ranked.append(ds)
+                            break
+                
+                return ranked[:limit]
+            else:
+                print(f"[DatasetFinder] ⚠️ Ranking error: {response.status_code}")
+                print(f"[DatasetFinder] Response: {response.text}")
+                return candidates[:limit]
+                
+        except Exception as e:
+            print(f"[DatasetFinder] ⚠️ AI ranking error: {e}")
+            import traceback
+            traceback.print_exc()
+            return candidates[:limit]

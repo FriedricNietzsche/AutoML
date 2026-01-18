@@ -166,6 +166,22 @@ export function useBackendPipeline(options: UsePipelineOptions) {
     }
 
     try {
+      // Special handling for DATA_SOURCE stage - trigger download
+      if (state.currentStage === 'DATA_SOURCE') {
+        console.log('[Pipeline] 📥 Triggering dataset download...');
+        const downloadResponse = await fetch(`${apiBase}/api/projects/${projectId}/dataset/download`, {
+          method: 'POST',
+        });
+
+        if (!downloadResponse.ok) {
+          const errorData = await downloadResponse.json();
+          throw new Error(errorData.detail || `Download failed: ${downloadResponse.statusText}`);
+        }
+
+        const downloadResult = await downloadResponse.json();
+        console.log('[Pipeline] ✅ Dataset downloaded:', downloadResult);
+      }
+
       const response = await fetch(`${apiBase}/api/projects/${projectId}/confirm`, {
         method: 'POST',
       });
@@ -193,7 +209,7 @@ export function useBackendPipeline(options: UsePipelineOptions) {
       onErrorRef.current?.(error);
       throw err;
     }
-  }, [apiBase, projectId]);
+  }, [apiBase, projectId, state.currentStage]);
 
   // Send chat message via WebSocket
   const sendChatMessage = useCallback((text: string) => {

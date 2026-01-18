@@ -123,28 +123,62 @@ class PreprocessAgent:
         print(f"[PreprocessAgent] ✅ Handled missing values in {len(steps)} columns")
         return df
 
-    def encode_categorical_variables(self, df: pd.DataFrame, max_categories: int = 10) -> pd.DataFrame:
-        """Encode categorical variables using one-hot or label encoding"""
-        print(f"[PreprocessAgent] Encoding categorical variables...")
+    def encode_categorical_variables(self, df: pd.DataFrame, max_categories: int = 10, target_column: str = "label") -> pd.DataFrame:
+        """
+        Encode categorical variables using one-hot or label encoding
+        
+        IMPORTANT: This intelligently detects text columns and PRESERVES them for NLP models.
+        - Text columns (high cardinality, long strings) → PRESERVED for transformer models
+        - True categorical (low/medium cardinality) → One-hot or label encoded
+        - Target column → Label encoded (for classification)
+        
+        Args:
+            df: Input DataFrame
+            max_categories: Max unique values for one-hot encoding
+            target_column: Name of target column (will be label-encoded)
+        """
+        print(f"[PreprocessAgent] Encoding categorical variables (preserving text columns)...")
         steps = []
         
         for col in df.columns:
             if not pd.api.types.is_numeric_dtype(df[col]):
                 unique_count = df[col].nunique()
+                unique_ratio = unique_count / len(df)
+                avg_length = df[col].astype(str).str.len().mean()
                 
-                if unique_count <= max_categories:
-                    # One-hot encoding for low cardinality
+                # CRITICAL: Detect text columns and PRESERVE them
+                is_text_column = (unique_ratio > 0.9 and avg_length > 50)
+                is_target = (col == target_column)
+                
+                if is_text_column and not is_target:
+                    # TEXT COLUMN - DO NOT ENCODE, preserve for NLP models
+                    print(f"[PreprocessAgent] 🔤 Detected TEXT column '{col}' (ratio={unique_ratio:.2f}, avg_len={avg_length:.0f}) - PRESERVING for NLP")
+                    steps.append(f"Preserved text column '{col}' for transformer model (not encoded)")
+                    # DO NOT MODIFY THIS COLUMN - leave as raw text
+                    
+                elif is_target:
+                    # TARGET COLUMN - Always label encode for training
+                    original_type = df[col].dtype
+                    df[col] = pd.Categorical(df[col]).codes
+                    steps.append(f"Label encoded target '{col}' ({unique_count} classes)")
+                    print(f"[PreprocessAgent] 🎯 Encoded target '{col}': {unique_count} classes")
+                    
+                elif unique_count <= max_categories:
+                    # LOW CARDINALITY CATEGORICAL - One-hot encode
                     dummies = pd.get_dummies(df[col], prefix=col, drop_first=True)
                     df = pd.concat([df, dummies], axis=1)
                     df.drop(col, axis=1, inplace=True)
                     steps.append(f"One-hot encoded '{col}' ({unique_count} categories) → {len(dummies.columns)} features")
+                    print(f"[PreprocessAgent] ✅ One-hot encoded '{col}': {unique_count} → {len(dummies.columns)} features")
+                    
                 else:
-                    # Label encoding for high cardinality
+                    # MEDIUM CARDINALITY CATEGORICAL - Label encode
                     df[col] = pd.Categorical(df[col]).codes
                     steps.append(f"Label encoded '{col}' ({unique_count} categories)")
+                    print(f"[PreprocessAgent] ✅ Label encoded '{col}': {unique_count} categories")
         
         self.preprocessing_steps.extend(steps)
-        print(f"[PreprocessAgent] ✅ Encoded {len(steps)} categorical columns")
+        print(f"[PreprocessAgent] ✅ Processed {len(steps)} categorical columns")
         return df
 
     def scale_numerical_features(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -166,21 +200,23 @@ class PreprocessAgent:
         print(f"[PreprocessAgent] ✅ Scaled {len(steps)} numeric columns")
         return df
 
-    def preprocess(self, df: pd.DataFrame) -> pd.DataFrame:
+    def preprocess(self, df: pd.DataFrame, target_column: str = "label") -> pd.DataFrame:
         """
         Full preprocessing pipeline
         
         Args:
             df: Input DataFrame
+            target_column: Name of the target/label column
             
         Returns:
             Preprocessed DataFrame
         """
         print(f"[PreprocessAgent] Starting full preprocessing pipeline...")
+        print(f"[PreprocessAgent] Target column: {target_column}")
         self.preprocessing_steps = []
         
         df = self.handle_missing_values(df)
-        df = self.encode_categorical_variables(df)
+        df = self.encode_categorical_variables(df, target_column=target_column)
         df = self.scale_numerical_features(df)
         
         print(f"[PreprocessAgent] ✅ Preprocessing complete - {len(self.preprocessing_steps)} steps applied")

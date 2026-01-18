@@ -69,11 +69,22 @@ class SentimentClassifier:
             print(f"[SentimentClassifier] Loading pre-trained model...")
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
             
-            # Determine number of labels
-            unique_labels = sorted(set(train_labels))
+            # Determine number of labels from BOTH train and val sets combined
+            all_labels = list(train_labels)
+            if val_labels:
+                all_labels.extend(val_labels)
+            unique_labels = sorted(set(all_labels))
             num_labels = len(unique_labels)
+            
+            # Ensure at least 2 labels for classification
+            if num_labels < 2:
+                print(f"[SentimentClassifier] ⚠️ Warning: Only {num_labels} unique label(s) found in data. Adding dummy second class.")
+                unique_labels = [0, 1]  # Binary classification fallback
+                num_labels = 2
+            
             self.label_map = {label: idx for idx, label in enumerate(unique_labels)}
             print(f"[SentimentClassifier] Number of classes: {num_labels}")
+            print(f"[SentimentClassifier] Label mapping: {self.label_map}")
             
             self.model = AutoModelForSequenceClassification.from_pretrained(
                 self.model_name,
@@ -115,7 +126,7 @@ class SentimentClassifier:
                 learning_rate=learning_rate,
                 weight_decay=0.01,
                 logging_steps=10,
-                evaluation_strategy="epoch" if eval_dataset else "no",
+                eval_strategy="epoch" if eval_dataset else "no",  # Updated from evaluation_strategy
                 save_strategy="epoch",
                 load_best_model_at_end=True if eval_dataset else False,
                 metric_for_best_model="accuracy" if eval_dataset else None,
@@ -250,29 +261,62 @@ class SentimentClassifier:
             results = classifier(texts)
             return np.array([int(r['label'].split('_')[-1]) for r in results])
     
-    def save(self, save_dir: Path):
-        """Save model and tokenizer"""
-        save_dir = Path(save_dir)
+    def save(self, save_path: Path):
+        """Save model and tokenizer
+        
+        Args:
+            save_path: Path where model should be saved. If ends with .joblib, 
+                      will use parent directory as model directory.
+        """
+        save_path = Path(save_path)
+        
+        # If the path ends with .joblib, it's an old sklearn path - use parent directory
+        if save_path.suffix == '.joblib':
+            save_dir = save_path.parent / "model"
+            print(f"[SentimentClassifier] Converting sklearn path to transformer directory: {save_dir}")
+        else:
+            save_dir = save_path
+        
+        # Create directory (remove file if it exists)
+        if save_dir.exists() and save_dir.is_file():
+            save_dir.unlink()
         save_dir.mkdir(parents=True, exist_ok=True)
         
         if hasattr(self.model, 'save_pretrained'):
             # Transformer model
-            self.model.save_pretrained(save_dir / "model")
+            self.model.save_pretrained(save_dir / "transformer")
             self.tokenizer.save_pretrained(save_dir / "tokenizer")
+            print(f"[SentimentClassifier] ✅ Saved transformer model to {save_dir}")
         else:
             # sklearn model
             joblib.dump(self.model, save_dir / "model.joblib")
             joblib.dump(self.tokenizer, save_dir / "tokenizer.joblib")
+            print(f"[SentimentClassifier] ✅ Saved sklearn model to {save_dir}")
         
         # Save label map
         with open(save_dir / "label_map.json", 'w') as f:
             json.dump(self.label_map, f)
         
+        print(f"[SentimentClassifier] ✅ Model saved successfully")
+        
         print(f"[SentimentClassifier] ✅ Model saved to {save_dir}")
     
-    def load(self, save_dir: Path):
-        """Load model and tokenizer"""
-        save_dir = Path(save_dir)
+    def load(self, save_path: Path):
+        """Load model and tokenizer
+        
+        Args:
+            save_path: Path where model was saved. If ends with .joblib,
+                      will look for model directory in parent.
+        """
+        save_path = Path(save_path)
+        
+        # Handle sklearn path format
+        if save_path.suffix == '.joblib':
+            save_dir = save_path.parent / "model"
+        else:
+            save_dir = save_path
+        
+        print(f"[SentimentClassifier] Loading model from {save_dir}")
         
         # Load label map
         with open(save_dir / "label_map.json", 'r') as f:
@@ -281,7 +325,7 @@ class SentimentClassifier:
         # Try loading transformer model first
         try:
             from transformers import AutoTokenizer, AutoModelForSequenceClassification
-            self.model = AutoModelForSequenceClassification.from_pretrained(save_dir / "model")
+            self.model = AutoModelForSequenceClassification.from_pretrained(save_dir / "transformer")
             self.tokenizer = AutoTokenizer.from_pretrained(save_dir / "tokenizer")
             print(f"[SentimentClassifier] ✅ Loaded transformer model from {save_dir}")
         except:

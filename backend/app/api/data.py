@@ -201,7 +201,8 @@ async def upload_dataset(project_id: str, file: UploadFile = File(...)):
 async def select_dataset(project_id: str, dataset_id: str = Body(..., embed=True)):
     """
     User selects a dataset from the suggested candidates.
-    Downloads it from HuggingFace and stores path in orchestrator context.
+    ONLY stores the selection - does NOT download yet.
+    Download happens when user clicks "Next/Confirm" button.
     """
     print(f"[API] User selected dataset: {dataset_id} for project: {project_id}")
     
@@ -214,104 +215,225 @@ async def select_dataset(project_id: str, dataset_id: str = Body(..., embed=True
         if not selected:
             raise HTTPException(status_code=404, detail=f"Dataset {dataset_id} not found in candidates")
         
-        # Publish download start event
+        # Check if this is the "upload CSV" prompt
+        if selected.get("is_upload_prompt") or dataset_id == "upload_csv":
+            # Store that user wants to upload CSV
+            context["selected_dataset"] = {
+                "id": dataset_id,
+                "name": selected.get("name", "Upload CSV"),
+                "source": "upload_pending",
+                "is_upload_prompt": True
+            }
+            
+            # Send event to show upload button (don't auto-trigger)
+            await event_bus.publish_event(
+                project_id=project_id,
+                event_name=EventType.STAGE_STATUS,
+                payload={
+                    "stage": StageID.DATA_SOURCE.value,
+                    "status": StageStatus.WAITING_CONFIRMATION.value,
+                    "message": "📤 Ready to upload CSV file",
+                    "action": "show_upload_button",
+                    "details": "Click 'Next' to proceed, then upload your CSV file"
+                },
+                stage_id=StageID.DATA_SOURCE,
+                stage_status=StageStatus.WAITING_CONFIRMATION,
+            )
+            
+            return {
+                "status": "ok",
+                "message": "Upload CSV selected - please click Next to proceed",
+                "requires_upload": True,
+                "selected": context["selected_dataset"]
+            }
+        
+        # For HuggingFace datasets, just store the selection (don't download yet)
+        context["selected_dataset"] = selected
+        
+        print(f"[API] ✅ Stored dataset selection: {selected.get('name', dataset_id)} (will download on confirm)")
+        
+        # Send confirmation event
+        await event_bus.publish_event(
+            project_id=project_id,
+            event_name=EventType.STAGE_STATUS,
+            payload={
+                "stage": StageID.DATA_SOURCE.value,
+                "status": StageStatus.WAITING_CONFIRMATION.value,
+                "message": f"✅ Selected: {selected.get('name', dataset_id)}",
+                "details": "Click 'Next' to download and proceed"
+            },
+            stage_id=StageID.DATA_SOURCE,
+            stage_status=StageStatus.WAITING_CONFIRMATION,
+        )
+        
+        return {
+            "status": "ok",
+            "message": "Dataset selected - click Next to download",
+            "selected": selected
+        }
+
+
+@router.post("/{project_id}/dataset/download")
+async def download_dataset(project_id: str):
+    """
+    Download the previously selected HuggingFace dataset.
+    Called when user clicks 'Next' button after selecting a dataset.
+    """
+    async with pipeline_orchestrator._lock:
+        context = pipeline_orchestrator._get_context(project_id)
+        selected = context.get("selected_dataset")
+    
+    if not selected:
+        raise HTTPException(status_code=400, detail="No dataset selected - select a dataset first")
+    
+    # Check if upload is required instead of download
+    if selected.get("is_upload_prompt") or selected.get("source") == "upload_pending":
+        raise HTTPException(status_code=400, detail="Upload CSV required - use /dataset/upload endpoint instead")
+    
+    # Check if already downloaded
+    if "path" in selected and Path(selected["path"]).exists():
+        return {
+            "status": "ok",
+            "message": "Dataset already downloaded",
+            "selected": selected,
+            "path": selected["path"]
+        }
+    
+    dataset_id = selected.get("id", "")
+    
+    # Download dataset from HuggingFace
+    print(f"[API] Downloading dataset from HuggingFace: {dataset_id}")
+    try:
+        from datasets import load_dataset
+        import pandas as pd
+        
+        # Publish fetching event
         await event_bus.publish_event(
             project_id=project_id,
             event_name=EventType.STAGE_STATUS,
             payload={
                 "stage": StageID.DATA_SOURCE.value,
                 "status": StageStatus.IN_PROGRESS.value,
-                "message": f"⬇️ Downloading dataset: {selected.get('name', dataset_id)}...",
-                "details": "This may take 30-60 seconds for large datasets"
+                "message": f"📦 Fetching dataset metadata from HuggingFace...",
             },
             stage_id=StageID.DATA_SOURCE,
             stage_status=StageStatus.IN_PROGRESS,
         )
         
-        # Download dataset from HuggingFace
-        print(f"[API] Downloading dataset from HuggingFace: {dataset_id}")
+        # Load from HuggingFace
         try:
-            from datasets import load_dataset
-            import pandas as pd
+            # Use full_name if available (e.g., stanfordnlp/imdb instead of just imdb)
+            hf_dataset_id = selected.get("full_name", dataset_id)
+            print(f"[API] Loading HuggingFace dataset: {hf_dataset_id}")
             
-            # Publish fetching event
-            await event_bus.publish_event(
-                project_id=project_id,
-                event_name=EventType.STAGE_STATUS,
-                payload={
-                    "stage": StageID.DATA_SOURCE.value,
-                    "status": StageStatus.IN_PROGRESS.value,
-                    "message": f"📦 Fetching dataset metadata from HuggingFace...",
-                },
-                stage_id=StageID.DATA_SOURCE,
-                stage_status=StageStatus.IN_PROGRESS,
-            )
-            
-            # Load from HuggingFace
-            dataset = load_dataset(dataset_id, split='train[:1000]')  # Limit to 1000 samples for speed
-            
-            # Publish processing event
-            await event_bus.publish_event(
-                project_id=project_id,
-                event_name=EventType.STAGE_STATUS,
-                payload={
-                    "stage": StageID.DATA_SOURCE.value,
-                    "status": StageStatus.IN_PROGRESS.value,
-                    "message": f"🔄 Processing dataset (1000 samples)...",
-                },
-                stage_id=StageID.DATA_SOURCE,
-                stage_status=StageStatus.IN_PROGRESS,
-            )
-            
-            # Convert to pandas DataFrame
-            df = dataset.to_pandas()
-            
-            # Save to project directory
-            project_dir = _project_dir(project_id)
-            dataset_path = project_dir / f"{dataset_id.replace('/', '_')}.csv"
-            df.to_csv(dataset_path, index=False)
-            
-            print(f"[API] ✅ Downloaded and saved {len(df)} rows to {dataset_path}")
-            
-            # Store selection with path
+            dataset = load_dataset(hf_dataset_id, split='train')  # Load full training set
+        except Exception as load_error:
+            # Provide helpful error message with suggestions
+            error_msg = str(load_error)
+            if "doesn't exist" in error_msg.lower() or "cannot be accessed" in error_msg.lower():
+                suggestions = []
+                if "titanic" in dataset_id.lower():
+                    suggestions = [
+                        "Try 'scikit-learn/titanic' or search for 'tabular' datasets",
+                        "Alternatively, upload a CSV file directly"
+                    ]
+                elif "mnist" in dataset_id.lower():
+                    suggestions = ["Try 'mnist' (the standard dataset)"]
+                elif "imdb" in dataset_id.lower():
+                    suggestions = ["Try 'imdb' or 'stanfordnlp/imdb'"]
+                
+                helpful_msg = f"Dataset '{dataset_id}' not found on HuggingFace Hub."
+                if suggestions:
+                    helpful_msg += " " + " ".join(suggestions)
+                
+                raise HTTPException(status_code=404, detail=helpful_msg)
+            raise
+        
+        # Convert to pandas
+        df_full = dataset.to_pandas()
+        
+        # Sample dataset for faster iteration (limit to 500 rows)
+        MAX_SAMPLES = 500
+        
+        if len(df_full) > MAX_SAMPLES:
+            print(f"[API] Large dataset detected ({len(df_full)} rows). Sampling {MAX_SAMPLES} for demo.")
+            # Stratified sample to ensure balanced classes
+            if 'label' in df_full.columns:
+                from sklearn.model_selection import train_test_split
+                _, df = train_test_split(
+                    df_full, 
+                    test_size=MAX_SAMPLES/len(df_full), 
+                    stratify=df_full['label'], 
+                    random_state=42
+                )
+            else:
+                df = df_full.sample(n=MAX_SAMPLES, random_state=42)
+        else:
+            # Use full dataset
+            df = df_full
+            print(f"[API] Using full dataset: {len(df)} rows")
+        
+        print(f"[API] Dataset size: {len(df)} rows with label distribution: {df['label'].value_counts().to_dict() if 'label' in df.columns else 'N/A'}")
+        
+        # Publish processing event
+        await event_bus.publish_event(
+            project_id=project_id,
+            event_name=EventType.STAGE_STATUS,
+            payload={
+                "stage": StageID.DATA_SOURCE.value,
+                "status": StageStatus.IN_PROGRESS.value,
+                "message": f"🔄 Processing dataset ({len(df)} samples)...",
+            },
+            stage_id=StageID.DATA_SOURCE,
+            stage_status=StageStatus.IN_PROGRESS,
+        )
+        
+        # Save to project directory
+        project_dir = _project_dir(project_id)
+        dataset_path = project_dir / f"{dataset_id.replace('/', '_')}.csv"
+        df.to_csv(dataset_path, index=False)
+        
+        print(f"[API] ✅ Downloaded and saved {len(df)} rows to {dataset_path}")
+        
+        # Store selection with path (need to update context)
+        async with pipeline_orchestrator._lock:
+            context = pipeline_orchestrator._get_context(project_id)
             selected["path"] = str(dataset_path)
             selected["rows"] = len(df)
             selected["columns"] = list(df.columns)
             context["selected_dataset"] = selected
-            
-            # Publish success event
-            await event_bus.publish_event(
-                project_id=project_id,
-                event_name=EventType.DATASET_SELECTED,
-                payload={
-                    "dataset": selected,
-                    "message": f"✅ Dataset downloaded: {len(df)} rows, {len(df.columns)} columns"
-                },
-                stage_id=StageID.DATA_SOURCE,
-                stage_status=StageStatus.IN_PROGRESS,
-            )
-            
-            return {"status": "ok", "selected": selected, "path": str(dataset_path)}
-            
-        except Exception as e:
-            print(f"[API] ❌ Error downloading dataset: {e}")
-            
-            # Publish error event
-            await event_bus.publish_event(
-                project_id=project_id,
-                event_name=EventType.STAGE_STATUS,
-                payload={
-                    "stage": StageID.DATA_SOURCE.value,
-                    "status": StageStatus.ERROR.value,
-                    "message": f"❌ Failed to download dataset: {str(e)}",
-                },
-                stage_id=StageID.DATA_SOURCE,
-                stage_status=StageStatus.ERROR,
-            )
-            
-            # Still store selection but without path - will use mock data
-            context["selected_dataset"] = selected
-            raise HTTPException(status_code=500, detail=f"Failed to download dataset: {e}")
+        
+        # Publish success event
+        await event_bus.publish_event(
+            project_id=project_id,
+            event_name=EventType.DATASET_SELECTED,
+            payload={
+                "dataset": selected,
+                "message": f"✅ Dataset downloaded: {len(df)} rows, {len(df.columns)} columns"
+            },
+            stage_id=StageID.DATA_SOURCE,
+            stage_status=StageStatus.IN_PROGRESS,
+        )
+        
+        return {"status": "ok", "selected": selected, "path": str(dataset_path)}
+        
+    except Exception as e:
+        print(f"[API] ❌ Error downloading dataset: {e}")
+        
+        # Publish error event
+        await event_bus.publish_event(
+            project_id=project_id,
+            event_name=EventType.STAGE_STATUS,
+            payload={
+                "stage": StageID.DATA_SOURCE.value,
+                "status": StageStatus.FAILED.value,
+                "message": f"❌ Failed to download dataset: {str(e)}",
+            },
+            stage_id=StageID.DATA_SOURCE,
+            stage_status=StageStatus.FAILED,
+        )
+        
+        raise HTTPException(status_code=500, detail=f"Failed to download dataset: {e}")
 
 
 @router.post("/{project_id}/model/select")
@@ -355,11 +477,10 @@ async def select_model(project_id: str, model_id: str = Body(..., embed=True)):
 @router.get("/hf/search")
 async def search_hf_datasets(query: str, limit: int = 20):
     """
-    Search Hugging Face datasets by keyword and return only public, allowed-license entries.
+    Search Hugging Face datasets by keyword and return only datasets with community licenses or unspecified.
     """
     token = _hf_token()
     api = HfApi(token=token)
-    allowed_licenses = {"mit", "apache-2.0", "cc-by-4.0", "cc0-1.0", "cc-by-sa-4.0", "unlicense"}
     results = []
     try:
         for ds in api.list_datasets(search=query, limit=limit):
@@ -369,16 +490,25 @@ async def search_hf_datasets(query: str, limit: int = 20):
             info = ds.card_data or {}
             lic_raw = (info.get("license") or "").lower()
             lic = lic_raw.strip()
-            if lic and lic not in allowed_licenses:
+            
+            # Allow "community" license or empty/unspecified (many HF datasets have no license field)
+            # Reject explicit non-community licenses
+            disallowed = ["apache-2.0", "mit", "cc-by", "gpl", "commercial"]
+            if lic and any(d in lic for d in disallowed):
                 continue
-            results.append({"id": ds.id, "license": lic or "unspecified"})
+            
+            results.append({
+                "id": ds.id,
+                "license": lic or "community",
+                "url": f"https://huggingface.co/datasets/{ds.id}"
+            })
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"HF search failed: {e}")
     if not results:
         return {
             "results": [],
             "count": 0,
-            "message": "No public datasets with allowed licenses found for this query. Try a different keyword or provide a dataset link.",
+            "message": "No datasets available with community licenses. Please upload your own data instead.",
         }
     return {"results": results, "count": len(results)}
 
