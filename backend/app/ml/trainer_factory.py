@@ -108,6 +108,16 @@ class TrainerFactory:
         Returns:
             Task type string
         """
+        # Check for image paths column
+        for col in df.columns:
+            if col == target_column:
+                continue
+            if df[col].dtype == 'object':
+                sample_val = str(df[col].iloc[0])
+                if any(ext in sample_val.lower() for ext in ['.jpg', '.jpeg', '.png', '.bmp', '.webp']):
+                    print(f"[TrainerFactory] Detected image path column: '{col}' → image_classification")
+                    return "image_classification"
+        
         # Check if there's a text column (high cardinality, long strings)
         for col in df.columns:
             if col == target_column:

@@ -645,8 +645,81 @@ class PipelineOrchestrator:
                     
                     elif actual_task_type == "image_classification":
                         # Image classification with transfer learning
-                        # TODO: Implement image path extraction
-                        raise NotImplementedError("Image classification training not yet implemented in pipeline")
+                        print(f"[TRAIN] Setting up image classification...")
+                        
+                        # Find image path column and labels
+                        image_col = None
+                        for col in original_df.columns:
+                            if col != target_column and original_df[col].dtype == 'object':
+                                # Check if values look like file paths
+                                sample_val = str(original_df[col].iloc[0])
+                                if any(ext in sample_val.lower() for ext in ['.jpg', '.jpeg', '.png', '.bmp', '.webp']):
+                                    image_col = col
+                                    break
+                        
+                        if not image_col:
+                            # Try to find images in project directory
+                            project_dir = Path(original_data_path).parent
+                            image_dir = project_dir / "images"
+                            
+                            if image_dir.exists():
+                                # Use directory structure: images/class_name/image.jpg
+                                print(f"[TRAIN] Using image directory: {image_dir}")
+                                image_paths = []
+                                labels = []
+                                class_names = []
+                                
+                                for class_dir in sorted(image_dir.iterdir()):
+                                    if class_dir.is_dir():
+                                        class_name = class_dir.name
+                                        if class_name not in class_names:
+                                            class_names.append(class_name)
+                                        class_idx = class_names.index(class_name)
+                                        
+                                        for img_path in class_dir.glob("*"):
+                                            if img_path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.bmp', '.webp']:
+                                                image_paths.append(str(img_path))
+                                                labels.append(class_idx)
+                                
+                                print(f"[TRAIN] Found {len(image_paths)} images in {len(class_names)} classes")
+                            else:
+                                raise ValueError("No image column or image directory found")
+                        else:
+                            # Use image paths from CSV
+                            print(f"[TRAIN] Found image path column: {image_col}")
+                            image_paths = original_df[image_col].tolist()
+                            labels = original_df[target_column].tolist()
+                            
+                            # Convert labels to integers if needed
+                            if isinstance(labels[0], str):
+                                unique_labels = sorted(set(labels))
+                                class_names = unique_labels
+                                label_map = {label: idx for idx, label in enumerate(unique_labels)}
+                                labels = [label_map[label] for label in labels]
+                            else:
+                                class_names = [f"class_{i}" for i in range(num_classes)]
+                        
+                        # Split into train/val
+                        from sklearn.model_selection import train_test_split
+                        train_paths, val_paths, train_labels, val_labels = train_test_split(
+                            image_paths, labels, test_size=0.2, random_state=42, stratify=labels
+                        )
+                        
+                        print(f"[TRAIN] Train images: {len(train_paths)}, Val images: {len(val_paths)}")
+                        
+                        def train_image_model():
+                            return trainer.train(
+                                train_image_paths=train_paths,
+                                train_labels=train_labels,
+                                val_image_paths=val_paths,
+                                val_labels=val_labels,
+                                class_names=class_names,
+                                num_epochs=5,  # Fast training for demo
+                                batch_size=16,
+                                freeze_backbone=True  # Transfer learning
+                            )
+                        
+                        metrics = await loop.run_in_executor(executor, train_image_model)
                     
                     else:
                         raise ValueError(f"Unknown task type: {actual_task_type}")
@@ -656,10 +729,16 @@ class PipelineOrchestrator:
             # Save trained model (only if local training was used)
             if trainer is not None and model_path is None:
                 model_dir = Path(processed_data_path).parent
-                model_path = model_dir / "trained_model.joblib"
                 
-                print(f"[TRAIN] Saving model to {model_path}...")
-                trainer.save(model_path)
+                # Image models save to directory, others to .joblib file
+                if actual_task_type == "image_classification":
+                    model_path = model_dir / "trained_model"
+                    print(f"[TRAIN] Saving image model to {model_path}...")
+                    trainer.save(model_path)
+                else:
+                    model_path = model_dir / "trained_model.joblib"
+                    print(f"[TRAIN] Saving model to {model_path}...")
+                    trainer.save(model_path)
             
             # Ensure we have metrics
             if metrics is None:
