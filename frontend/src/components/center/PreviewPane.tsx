@@ -3,8 +3,9 @@ import { ArrowLeft, ArrowRight, RotateCw, ExternalLink } from 'lucide-react';
 import type { FileSystemNode } from '../../lib/types';
 import type { BuildSession, BuildStatus } from '../../lib/buildSession';
 import EmptyPreview from './preview/EmptyPreview';
-import RealBackendLoader from './loader/RealBackendLoader';
+import TrainingLoader from './loader/TrainingLoader';
 import APIDocsPane from './preview/APIDocsPane';
+import { useBackendPipeline } from '../../hooks/useBackendPipeline';
 
 interface PreviewPaneProps {
   files: FileSystemNode[];
@@ -26,6 +27,13 @@ export default function PreviewPane({
   sessionStatus,
 }: PreviewPaneProps) {
   const [completed, setCompleted] = useState(false);
+  const [started, setStarted] = useState(false);
+
+  // Use backend pipeline to trigger real run while showing TrainingLoader
+  const { startPipeline } = useBackendPipeline({
+    projectId: 'demo-project',
+    onComplete: () => setCompleted(true),
+  });
 
   // Reset completion flag when a new build starts.
   useEffect(() => {
@@ -34,6 +42,13 @@ export default function PreviewPane({
     const t = window.setTimeout(() => setCompleted(false), 0);
     return () => window.clearTimeout(t);
   }, [hasSession, isRunning, sessionStatus]);
+
+  // Reset start flag when a new run kicks off
+  useEffect(() => {
+    if (isRunning || sessionStatus === 'building') {
+      setStarted(false);
+    }
+  }, [isRunning, sessionStatus]);
 
   // Determine View State
   let viewState: 'empty' | 'processing' | 'docs' = 'empty';
@@ -85,11 +100,21 @@ export default function PreviewPane({
       <div className="flex-1 overflow-hidden relative">
          {viewState === 'empty' && <EmptyPreview />}
          {viewState === 'processing' && (
-          <RealBackendLoader
-                session={session}
-                onComplete={handleComplete} 
-                updateFileContent={updateFileContent} 
-            />
+          <TrainingLoader
+            onComplete={handleComplete}
+            updateFileContent={updateFileContent}
+            useMockStream={false}
+            onStart={async () => {
+              if (started) return;
+              const prompt = session?.goalPrompt || 'Build a classification model from my dataset.';
+              setStarted(true);
+              try {
+                await startPipeline(prompt);
+              } catch {
+                setStarted(false);
+              }
+            }}
+          />
          )}
          {viewState === 'docs' && <APIDocsPane files={files} />}
       </div>

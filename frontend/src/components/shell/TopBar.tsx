@@ -1,4 +1,4 @@
-import { Brain, CheckCircle2, Database, Download, Loader2, Lock, Moon, Play, Sun, Wifi } from 'lucide-react';
+import { Brain, Moon, Sun, Wifi } from 'lucide-react';
 import type { ConnectionStatus } from '../../lib/ws';
 
 interface TopBarProps {
@@ -12,6 +12,7 @@ interface TopBarProps {
   connectionStatus?: ConnectionStatus;
   onPingBackend?: () => void;
   isPinging?: boolean;
+  onNavigateHome: () => void;
 }
 
 export default function TopBar({
@@ -25,8 +26,8 @@ export default function TopBar({
   connectionStatus = 'idle',
   onPingBackend,
   isPinging = false,
+  onNavigateHome,
 }: TopBarProps) {
-  const runDisabled = !isBuildReady || isPipelineRunning;
 
   const statusStyle =
     connectionStatus === 'open'
@@ -39,17 +40,21 @@ export default function TopBar({
 
   return (
     <header className="h-12 bg-replit-surface/65 backdrop-blur-xl border-b border-replit-border/70 flex items-center justify-between px-4 shrink-0">
-      {/* Left: Brand */}
-      <div className="flex items-center gap-3 min-w-0">
+      {/* Left: Brand / Home */}
+      <button 
+        onClick={onNavigateHome}
+        className="flex items-center gap-3 min-w-0 hover:opacity-80 transition-opacity"
+        aria-label="Go Home"
+      >
         <div className="relative w-7 h-7 rounded-lg flex items-center justify-center shadow-sm bg-gradient-to-br from-sky-500 to-blue-600">
           <Brain className="w-4 h-4 text-white" />
           <div className="absolute inset-0 blur-xl opacity-30 bg-replit-accent" />
         </div>
-        <div className="min-w-0">
+        <div className="min-w-0 text-left">
           <div className="text-replit-text font-semibold text-sm leading-tight truncate">AIAI Workspace</div>
           <div className="text-[11px] text-replit-textMuted leading-tight truncate">Build • Train • Iterate</div>
         </div>
-      </div>
+      </button>
 
       {/* Right: Actions */}
       <div className="flex items-center gap-2">
@@ -97,59 +102,6 @@ export default function TopBar({
         >
           {isDark ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
         </button>
-
-        <button
-          onClick={onRun}
-          disabled={runDisabled}
-          className={
-            'px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-2 ' +
-            (runDisabled
-              ? 'bg-replit-surfaceHover text-replit-textMuted border border-replit-border/60 cursor-not-allowed'
-              : 'bg-replit-accent hover:bg-replit-accentHover text-white')
-          }
-          aria-label="Run"
-          title={!isBuildReady ? 'Locked until build completes' : isPipelineRunning ? 'Build is running…' : 'Run'}
-        >
-          <Play className="w-4 h-4" />
-          <span className="hidden sm:inline">Run</span>
-        </button>
-
-        <div
-          className={
-            'px-2.5 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-2 ' +
-            (isBuildReady
-              ? 'border-replit-border bg-replit-surface text-replit-success'
-              : 'border-replit-border bg-replit-surface text-replit-textMuted')
-          }
-          aria-label="Build status"
-          title={isBuildReady ? 'READY' : 'BUILDING'}
-        >
-          {isBuildReady ? <CheckCircle2 className="w-4 h-4" /> : isPipelineRunning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Lock className="w-4 h-4" />}
-          <span className="hidden md:inline">{isBuildReady ? 'READY' : 'BUILDING'}</span>
-          <span className="md:hidden">{isBuildReady ? 'OK' : '...'}</span>
-        </div>
-
-        {isBuildReady && (
-          <>
-            <button
-              onClick={onGenerateData}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-2 border border-replit-border bg-replit-surface hover:bg-replit-surfaceHover"
-              aria-label="Generate Data"
-            >
-              <Database className="w-4 h-4" />
-              <span className="hidden sm:inline">Generate Data</span>
-            </button>
-
-            <button
-              onClick={onExportModel}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-2 border border-replit-border bg-replit-surface hover:bg-replit-surfaceHover"
-              aria-label="Export Model"
-            >
-              <Download className="w-4 h-4" />
-              <span className="hidden sm:inline">Export</span>
-            </button>
-          </>
-        )}
       </div>
     </header>
   );

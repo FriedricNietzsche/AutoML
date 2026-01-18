@@ -1,23 +1,7 @@
+import type { WSEnvelope } from './contract';
+
 export type ConnectionStatus = 'idle' | 'connecting' | 'open' | 'closed' | 'error';
-
-export interface StageInfo {
-  id?: string;
-  index?: number;
-  status?: string;
-}
-
-export interface EventEnvelope {
-  v?: number;
-  type?: string;
-  project_id?: string;
-  seq?: number;
-  ts?: number;
-  stage?: StageInfo;
-  event?: {
-    name?: string;
-    payload?: unknown;
-  };
-}
+export type EventEnvelope = WSEnvelope;
 
 type WSClientOptions = {
   projectId: string;
@@ -125,5 +109,5 @@ export function createWebSocketClient(opts: WSClientOptions): WSClient {
 }
 
 export function isHello(event: EventEnvelope) {
-  return event.event?.name === 'HELLO' || event.type === 'HELLO';
+  return event.event?.name === 'HELLO';
 }

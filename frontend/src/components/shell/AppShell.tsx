@@ -557,6 +557,7 @@ export default function AppShell() {
         connectionStatus={connectionStatus}
         onPingBackend={pingBackend}
         isPinging={pinging}
+        onNavigateHome={() => navigate('/')}
       />
 
       <div ref={containerRef} className="flex-1 flex overflow-hidden">
@@ -585,9 +586,8 @@ export default function AppShell() {
             <AIBuilderPanel
               session={session}
               onCollapse={() => setLeftCollapsed(true)}
-              onEditSession={() => navigate('/')}
+                onEditSession={() => navigate('/')}
               onUpdateSession={patchSession}
-              onSendMessage={handleSendChangeRequest}
             />
           )}
         </ResizablePanel>

@@ -92,7 +92,7 @@ export interface WSEventPayload<T extends EventType = EventType, P = unknown> {
 }
 
 export interface WSEnvelope<T extends EventType = EventType, P = unknown> {
-  v: number;
+  v?: number;
   type: 'EVENT';
   project_id: string;
   seq: number;

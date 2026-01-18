@@ -92,17 +92,15 @@ export default function RealBackendLoader({ session, onComplete, updateFileConte
 
   // Handle initial pipeline start - uses prompt from session
   const handleStart = useCallback(async () => {
-    if (!session?.goalPrompt) {
-      setErrorDetails('No goal prompt found in session');
-      return;
-    }
-    
+    const prompt = session?.goalPrompt?.trim() || 'Build a classification model from my dataset.';
     try {
+      setErrorDetails(null);
       setPipelineStarted(true);
-      await startPipeline(session.goalPrompt);
+      await startPipeline(prompt);
     } catch (err) {
       console.error('[RealBackendLoader] Start failed:', err);
       setPipelineStarted(false);
+      setErrorDetails(err instanceof Error ? err.message : 'Failed to start pipeline');
     }
   }, [session, startPipeline]);
 
