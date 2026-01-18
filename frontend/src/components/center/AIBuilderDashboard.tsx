@@ -1,5 +1,5 @@
 import type { FileSystemNode } from '../../lib/types';
-import { Activity, CheckCircle, Settings, BarChart3, Target, TrendingUp, Zap, PieChart } from 'lucide-react';
+import { Activity, CheckCircle, Settings, BarChart3, Target, TrendingUp, Zap, PieChart, Sparkles, Info } from 'lucide-react';
 import { Fragment } from 'react';
 import { useMetricsStore } from '../../store/metricsStore';
 
@@ -15,8 +15,11 @@ export default function AIBuilderDashboard({ files }: AIBuilderDashboardProps) {
     regressionMetrics,
     confusionMatrix: storeConfusionMatrix,
     featureImportance,
+    shapExplanations,
+    evaluationComplete,
     metricHistory,
     isEvaluating,
+    hasMetrics,
   } = useMetricsStore();
 
   // Helper to read file content from VFS tree (for pipeline status)
@@ -311,6 +314,120 @@ export default function AIBuilderDashboard({ files }: AIBuilderDashboardProps) {
                   </div>
                 );
               })}
+            </div>
+          </div>
+        )}
+
+        {/* SHAP Explanations Section */}
+        {shapExplanations && (
+          <div className="col-span-12 bg-replit-surface/35 backdrop-blur rounded-xl border border-replit-border/60 p-6">
+            <h2 className="font-semibold text-replit-text mb-4 flex items-center gap-2">
+              <Sparkles size={16} className="text-yellow-400" /> SHAP Explanations
+            </h2>
+            {shapExplanations.available ? (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 text-sm text-replit-success bg-replit-success/10 p-3 rounded-lg">
+                  <CheckCircle size={16} />
+                  <span>SHAP analysis completed - {shapExplanations.feature_names?.length || 0} features analyzed</span>
+                </div>
+                
+                {/* SHAP Global Importance */}
+                {shapExplanations.importance_ranking && shapExplanations.importance_ranking.length > 0 && (
+                  <div>
+                    <h3 className="text-sm font-medium text-replit-text mb-3 flex items-center gap-2">
+                      <Info size={14} />
+                      SHAP Global Feature Importance (Model-Agnostic)
+                    </h3>
+                    <p className="text-xs text-replit-textMuted mb-3">
+                      SHAP values show the average impact of each feature on model predictions, accounting for feature interactions.
+                    </p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {shapExplanations.importance_ranking.slice(0, 10).map((item, idx) => {
+                        const maxImportance = Math.max(...shapExplanations.importance_ranking!.slice(0, 10).map(f => f.importance));
+                        return (
+                          <div key={idx} className="flex items-center gap-3">
+                            <div className="text-xs text-replit-textMuted w-5 text-right">{idx + 1}</div>
+                            <div className="flex-1">
+                              <div className="flex justify-between items-center mb-1">
+                                <span className="text-sm text-replit-text truncate max-w-[200px]">{item.feature}</span>
+                                <span className="text-xs text-yellow-400 ml-2">{item.importance.toFixed(4)}</span>
+                              </div>
+                              <div className="h-2 bg-replit-bg rounded-full overflow-hidden">
+                                <div
+                                  className="h-full bg-gradient-to-r from-yellow-500 to-orange-500 transition-all duration-500"
+                                  style={{ width: `${(item.importance / maxImportance) * 100}%` }}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                
+                {/* Global importance as alternative */}
+                {shapExplanations.global_importance && !shapExplanations.importance_ranking && (
+                  <div>
+                    <h3 className="text-sm font-medium text-replit-text mb-3">Global Feature Importance</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {Object.entries(shapExplanations.global_importance)
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 10)
+                        .map(([feature, importance], idx) => {
+                          const maxImportance = Math.max(...Object.values(shapExplanations.global_importance!));
+                          return (
+                            <div key={idx} className="flex items-center gap-3">
+                              <div className="text-xs text-replit-textMuted w-5 text-right">{idx + 1}</div>
+                              <div className="flex-1">
+                                <div className="flex justify-between items-center mb-1">
+                                  <span className="text-sm text-replit-text truncate max-w-[200px]">{feature}</span>
+                                  <span className="text-xs text-yellow-400 ml-2">{importance.toFixed(4)}</span>
+                                </div>
+                                <div className="h-2 bg-replit-bg rounded-full overflow-hidden">
+                                  <div
+                                    className="h-full bg-gradient-to-r from-yellow-500 to-orange-500 transition-all duration-500"
+                                    style={{ width: `${(importance / maxImportance) * 100}%` }}
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 text-sm text-replit-textMuted bg-replit-bg/40 p-3 rounded-lg">
+                <Info size={16} />
+                <span>{shapExplanations.message || 'SHAP library not installed - install with: pip install shap'}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Evaluation Summary */}
+        {evaluationComplete && hasMetrics() && (
+          <div className="col-span-12 bg-gradient-to-r from-replit-success/10 to-replit-accent/10 backdrop-blur rounded-xl border border-replit-success/40 p-6">
+            <div className="flex items-start justify-between">
+              <div>
+                <h2 className="font-semibold text-replit-text mb-2 flex items-center gap-2">
+                  <CheckCircle size={18} className="text-replit-success" /> Training Complete
+                </h2>
+                <p className="text-sm text-replit-textMuted">
+                  {evaluationComplete.task_type === 'classification' ? 'Classification' : 'Regression'} model trained successfully
+                </p>
+              </div>
+              <div className="text-right">
+                <div className="text-2xl font-bold text-replit-text">
+                  {evaluationComplete.primary_metric}: {(evaluationComplete.primary_value * 100).toFixed(1)}%
+                </div>
+                <div className="text-xs text-replit-textMuted mt-1">
+                  {evaluationComplete.artifacts?.length || 0} artifacts generated
+                  {evaluationComplete.shap_available && ' • SHAP available'}
+                </div>
+              </div>
             </div>
           </div>
         )}
