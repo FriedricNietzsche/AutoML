@@ -10,8 +10,10 @@ from ..events.bus import event_bus
 from ..events.schema import EventType, StageID, StageStatus
 from ..orchestrator.conductor import conductor
 from ..agents.chat_agent import get_chat_agent
+from ..utils import redact_string, redact_dict, PRESIDIO_AVAILABLE
 
 logger = logging.getLogger(__name__)
+
 
 router = APIRouter(tags=["websocket"])
 

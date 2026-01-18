@@ -26,9 +26,17 @@ from app.events.schema import (
 from app.orchestrator.conductor import conductor
 from app.orchestrator.pipeline import orchestrator as pipeline_orchestrator
 from app.api.assets import ASSET_ROOT
+from app.utils import redact_dataframe, RedactionConfig, PRESIDIO_AVAILABLE
 
 router = APIRouter(prefix="/api/projects", tags=["data"])
 log = logging.getLogger(__name__)
+
+# Redaction configuration for data
+DATA_REDACTION_CONFIG = RedactionConfig(
+    enabled=True,
+    score_threshold=0.35,
+    show_entity_type=False,
+)
 
 
 def _project_dir(project_id: str) -> Path:
@@ -50,10 +58,22 @@ def _hf_token() -> Optional[str]:
 
 
 async def _emit_sample(project_id: str, df: pd.DataFrame, sample_path: Path):
+    """Emit dataset sample event with redacted data."""
+    # Redact sensitive data before saving to disk and sending
+    if PRESIDIO_AVAILABLE:
+        df_redacted = redact_dataframe(df, config=DATA_REDACTION_CONFIG)
+        log.info(f"[{project_id}] Applied redaction to sample data")
+    else:
+        df_redacted = df
+        log.warning(f"[{project_id}] Redaction not available - sample contains raw data")
+    
+    # Save redacted sample to disk
+    df_redacted.head(200).to_csv(sample_path, index=False)
+    
     payload = {
         "asset_url": _asset_url(sample_path),
-        "columns": list(df.columns),
-        "n_rows": len(df),
+        "columns": list(df_redacted.columns),
+        "n_rows": len(df_redacted),
     }
     await event_bus.publish_event(
         project_id=project_id,
@@ -175,7 +195,8 @@ async def upload_dataset(project_id: str, file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail=f"Failed to read CSV: {e}")
 
     sample_path = project_dir / "sample.csv"
-    df.head(200).to_csv(sample_path, index=False)
+    # Note: _emit_sample now handles redaction internally
+    # df.head(200).to_csv(sample_path, index=False)  # Removed - will be saved redacted in _emit_sample
 
     # Store the uploaded dataset in orchestrator context
     async with orchestrator._lock:

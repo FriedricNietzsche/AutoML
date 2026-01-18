@@ -12,11 +12,33 @@ env_path = Path(__file__).parent.parent / ".env"
 load_dotenv(env_path, override=True)
 print(f"[Startup] Loaded environment from: {env_path}")
 
-# Configure logging
+# Configure logging with redaction
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
+
+# Import and configure redaction
+try:
+    from app.utils import setup_redacted_logging, RedactionConfig, PRESIDIO_AVAILABLE
+    
+    if PRESIDIO_AVAILABLE:
+        # Configure redaction settings
+        redaction_config = RedactionConfig(
+            enabled=True,
+            score_threshold=0.35,  # Confidence threshold for PII detection
+            show_entity_type=False,  # Set to True for debugging to see [EMAIL], [PHONE], etc.
+        )
+        
+        # Apply redaction to all loggers
+        setup_redacted_logging(config=redaction_config)
+        print("[Startup] ✅ Redaction enabled - All logs will be automatically sanitized")
+    else:
+        print("[Startup] ⚠️  Redaction disabled - Presidio not installed")
+        print("[Startup] Install with: pip install presidio-analyzer presidio-anonymizer")
+except Exception as e:
+    print(f"[Startup] ⚠️  Failed to setup redaction: {e}")
+
 
 app = FastAPI(
     title="AutoML Agentic Builder",
@@ -32,6 +54,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add redaction middleware for API responses
+try:
+    from app.middleware import configure_redaction_middleware
+    configure_redaction_middleware(app, enabled=True)
+except Exception as e:
+    print(f"[Startup] ⚠️  Failed to setup redaction middleware: {e}")
+
 
 # Import and include routers
 from app.ws.router import router as ws_router
