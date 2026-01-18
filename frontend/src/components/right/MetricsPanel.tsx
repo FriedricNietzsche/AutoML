@@ -315,15 +315,102 @@ export default function MetricsPanel() {
       {/* Feature Importance */}
       {renderFeatureImportance()}
 
-      {/* SHAP Explanations Status */}
+      {/* SHAP Explanations - Enhanced Display */}
       {shapExplanations && (
         <div className="bg-replit-surface/35 backdrop-blur rounded-xl border border-replit-border/60 p-4">
-          <h3 className="text-sm font-semibold text-replit-text mb-2">SHAP Explanations</h3>
-          <p className="text-sm text-replit-textMuted">
-            {shapExplanations.available
-              ? `✅ Available - ${shapExplanations.feature_names?.length || 0} features analyzed`
-              : `❌ Not available - ${shapExplanations.message || 'SHAP library not installed'}`}
-          </p>
+          <h3 className="text-sm font-semibold text-replit-text mb-3 flex items-center gap-2">
+            <span className="text-yellow-400">✨</span> SHAP Explanations
+          </h3>
+          
+          {shapExplanations.available ? (
+            <div className="space-y-4">
+              <div className="flex items-center gap-2 text-sm text-replit-success bg-replit-success/10 p-2 rounded-lg">
+                ✅ SHAP analysis available - {shapExplanations.feature_names?.length || 0} features
+              </div>
+              
+              {/* SHAP Importance Ranking */}
+              {shapExplanations.importance_ranking && shapExplanations.importance_ranking.length > 0 && (
+                <div>
+                  <h4 className="text-xs font-medium text-replit-textMuted mb-2">SHAP Global Importance</h4>
+                  <div className="space-y-2">
+                    {shapExplanations.importance_ranking.slice(0, 8).map((item, idx) => {
+                      const maxImportance = Math.max(...shapExplanations.importance_ranking!.slice(0, 8).map(f => f.importance));
+                      return (
+                        <div key={idx} className="flex items-center gap-2">
+                          <div className="text-xs text-replit-textMuted w-4">{idx + 1}</div>
+                          <div className="flex-1">
+                            <div className="flex justify-between items-center mb-0.5">
+                              <span className="text-xs text-replit-text truncate max-w-[120px]">{item.feature}</span>
+                              <span className="text-xs text-yellow-400">{item.importance.toFixed(3)}</span>
+                            </div>
+                            <div className="h-1.5 bg-replit-bg rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-gradient-to-r from-yellow-500 to-orange-500"
+                                style={{ width: `${(item.importance / maxImportance) * 100}%` }}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              
+              {/* Alternative: Global importance dict */}
+              {shapExplanations.global_importance && !shapExplanations.importance_ranking && (
+                <div>
+                  <h4 className="text-xs font-medium text-replit-textMuted mb-2">Global Feature Impact</h4>
+                  <div className="space-y-2">
+                    {Object.entries(shapExplanations.global_importance)
+                      .sort((a, b) => b[1] - a[1])
+                      .slice(0, 8)
+                      .map(([feature, importance], idx) => {
+                        const maxImportance = Math.max(...Object.values(shapExplanations.global_importance!));
+                        return (
+                          <div key={idx} className="flex items-center gap-2">
+                            <div className="text-xs text-replit-textMuted w-4">{idx + 1}</div>
+                            <div className="flex-1">
+                              <div className="flex justify-between items-center mb-0.5">
+                                <span className="text-xs text-replit-text truncate max-w-[120px]">{feature}</span>
+                                <span className="text-xs text-yellow-400">{importance.toFixed(3)}</span>
+                              </div>
+                              <div className="h-1.5 bg-replit-bg rounded-full overflow-hidden">
+                                <div
+                                  className="h-full bg-gradient-to-r from-yellow-500 to-orange-500"
+                                  style={{ width: `${(importance / maxImportance) * 100}%` }}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="text-sm text-replit-textMuted bg-replit-bg/40 p-2 rounded-lg">
+              ❌ {shapExplanations.message || 'SHAP not available - install with: pip install shap'}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Evaluation Complete Summary */}
+      {evaluationComplete && (
+        <div className="bg-gradient-to-r from-replit-success/10 to-replit-accent/10 rounded-xl border border-replit-success/40 p-4 mt-4">
+          <h3 className="text-sm font-semibold text-replit-text mb-2 flex items-center gap-2">
+            ✅ Evaluation Complete
+          </h3>
+          <div className="text-2xl font-bold text-replit-text mb-1">
+            {evaluationComplete.primary_metric}: {(evaluationComplete.primary_value * 100).toFixed(1)}%
+          </div>
+          <div className="text-xs text-replit-textMuted">
+            {evaluationComplete.task_type === 'classification' ? 'Classification' : 'Regression'} • 
+            {evaluationComplete.artifacts?.length || 0} artifacts
+            {evaluationComplete.shap_available && ' • SHAP ✓'}
+          </div>
         </div>
       )}
     </div>
