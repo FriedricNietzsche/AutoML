@@ -20,7 +20,7 @@ import { usePipelineRunner } from '../../lib/usePipelineRunner';
 import { useRouter } from '../../router/router';
 import type { BuildSession, ChatMessage } from '../../lib/buildSession';
 import { useTheme } from '../../lib/theme';
-import { FolderOpen, PanelRightOpen } from 'lucide-react';
+import { FolderOpen, PanelRightOpen, FolderTree, BarChart3 } from 'lucide-react';
 import { useProjectStore } from '../../store/projectStore';
 import ThemedBackground from '../ThemedBackground';
 

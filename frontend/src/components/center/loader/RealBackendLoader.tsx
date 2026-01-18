@@ -782,12 +782,12 @@ export default function RealBackendLoader({ session, onComplete, updateFileConte
         </div>
       </div>
 
-      {/* Actions */}
-      {currentStage && stages[currentStage]?.status === 'WAITING_CONFIRMATION' && (
+      {/* Actions - Always visible */}
+      {currentStage && (
         <div className="flex-shrink-0 bg-replit-surface/60 border-t border-replit-border px-6 py-4">
           <div className="flex flex-col gap-3">
             {/* Error message with option to go back */}
-            {hasStageError && (
+            {hasStageError && stages[currentStage]?.status === 'WAITING_CONFIRMATION' && (
               <div className="flex items-center gap-2 px-4 py-3 bg-red-500/10 border border-red-500/30 rounded-lg">
                 <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0" />
                 <span className="text-sm text-red-400 flex-1">
@@ -799,8 +799,8 @@ export default function RealBackendLoader({ session, onComplete, updateFileConte
             )}
             
             <div className="flex items-center gap-3">
-              {/* Go Back / Choose Different button */}
-              {(selectedDatasetId || selectedModelId) && (
+              {/* Go Back / Choose Different button - only when waiting for confirmation */}
+              {stages[currentStage]?.status === 'WAITING_CONFIRMATION' && (selectedDatasetId || selectedModelId) && (
                 <button
                   onClick={() => {
                     if (currentStage === 'DATA_SOURCE') {
@@ -828,7 +828,7 @@ export default function RealBackendLoader({ session, onComplete, updateFileConte
                     setIsConfirming(false);
                   }
                 }}
-                disabled={isConfirming || (currentStage === 'DATA_SOURCE' && !selectedDatasetId) || (currentStage === 'MODEL_SELECT' && !selectedModelId)}
+                disabled={isConfirming}
                 className="px-6 py-3 bg-replit-accent hover:bg-replit-accent/90 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 {isConfirming ? (
@@ -836,10 +836,6 @@ export default function RealBackendLoader({ session, onComplete, updateFileConte
                     <Loader2 className="w-4 h-4 animate-spin" />
                     Confirming...
                   </>
-                ) : currentStage === 'DATA_SOURCE' && !selectedDatasetId ? (
-                  'Select a Dataset First'
-                ) : currentStage === 'MODEL_SELECT' && !selectedModelId ? (
-                  'Select a Model First'
                 ) : (
                   'Confirm & Continue'
                 )}
