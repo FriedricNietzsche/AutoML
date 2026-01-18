@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import TopBar from './TopBar';
 import ResizablePanel from './ResizablePanel';
-import AIBuilderPanel from '../left/AIBuilderPanel';
 import FilesPanel from '../right/FilesPanel';
 import WorkspaceTabs, { type Tab } from '../center/WorkspaceTabs';
 import DashboardPane from '../center/DashboardPane';
@@ -20,7 +19,7 @@ import { usePipelineRunner } from '../../lib/usePipelineRunner';
 import { useRouter } from '../../router/router';
 import type { BuildSession, ChatMessage } from '../../lib/buildSession';
 import { useTheme } from '../../lib/theme';
-import { FolderOpen, PanelLeftOpen, PanelRightOpen } from 'lucide-react';
+import { FolderOpen, PanelRightOpen } from 'lucide-react';
 import { useProjectStore } from '../../store/projectStore';
 import ThemedBackground from '../ThemedBackground';
 
@@ -125,12 +124,11 @@ export default function AppShell() {
   const [session, setSession] = useLocalStorageState<BuildSession | null>('autoai.buildSession.current', null);
 
   // Panel state
-  const [leftCollapsed, setLeftCollapsed] = useLocalStorageState('leftPanelCollapsed', false);
   const [rightCollapsed, setRightCollapsed] = useLocalStorageState('rightPanelCollapsed', false);
   
   // Resizable panels
   const { sizes, handlePointerDown, containerRef } = useResizablePanels({
-    left: 360,
+    left: 0,
     right: 300,
   });
 
@@ -145,9 +143,13 @@ export default function AppShell() {
     undefined;
   const apiBase = useMemo(() => resolveHttpBase(wsBase), [wsBase]);
 
-  const { connectionStatus, lastEvent, connect: connectProject, hydrate } = useProjectStore((state) => ({
+  const { connectionStatus, lastEvent, currentStageId, stages, waitingConfirmation, confirm, connect: connectProject, hydrate } = useProjectStore((state) => ({
     connectionStatus: state.connectionStatus,
     lastEvent: state.lastEvent,
+    currentStageId: state.currentStageId,
+    stages: state.stages,
+    waitingConfirmation: state.waitingConfirmation,
+    confirm: state.confirm,
     connect: state.connect,
     hydrate: state.hydrate,
   }));
@@ -470,7 +472,6 @@ export default function AppShell() {
   useKeyboardShortcuts({
     'ctrl+`': () => setActiveTabId('console'),
     'ctrl+p': () => setQuickSwitcherOpen(true),
-    'ctrl+b': () => setLeftCollapsed(!leftCollapsed),
     'ctrl+e': () => setRightCollapsed(!rightCollapsed),
   });
 
@@ -548,8 +549,6 @@ export default function AppShell() {
 
       <TopBar
         isBuildReady={isBuildReady}
-        isPipelineRunning={isRunning}
-        onRun={handleRunPipeline}
         onGenerateData={handleGenerateData}
         onExportModel={handleExportModel}
         isDark={isDark}
@@ -557,41 +556,13 @@ export default function AppShell() {
         connectionStatus={connectionStatus}
         onPingBackend={pingBackend}
         isPinging={pinging}
+        currentStage={currentStageId}
+        stages={stages}
+        waitingConfirmation={waitingConfirmation}
+        onConfirm={confirm}
       />
 
       <div ref={containerRef} className="flex-1 flex overflow-hidden">
-        {/* Left Panel - AI Builder */}
-        <ResizablePanel
-          width={sizes.left}
-          side="left"
-          isCollapsed={leftCollapsed}
-          onResize={handlePointerDown}
-          collapsedContent={
-            <>
-              <button
-                onClick={() => setLeftCollapsed(false)}
-                className="p-2 rounded-lg hover:bg-replit-surfaceHover/40 text-replit-textMuted"
-                aria-label="Expand input panel"
-                title="Expand (Ctrl+B)"
-              >
-                <PanelLeftOpen className="w-4 h-4" />
-              </button>
-              <div className="h-px w-8 bg-replit-border/60" />
-              <div className="text-[10px] text-replit-textMuted rotate-90 whitespace-nowrap mt-6">Input</div>
-            </>
-          }
-        >
-          {session && (
-            <AIBuilderPanel
-              session={session}
-              onCollapse={() => setLeftCollapsed(true)}
-              onEditSession={() => navigate('/')}
-              onUpdateSession={patchSession}
-              onSendMessage={handleSendChangeRequest}
-            />
-          )}
-        </ResizablePanel>
-
         {/* Center Workspace */}
         <div className="flex-1 flex flex-col min-w-0">
           <WorkspaceTabs
