@@ -1,13 +1,25 @@
 import type { FileSystemNode } from '../../lib/types';
-import { Activity, CheckCircle, Settings } from 'lucide-react';
+import { Activity, CheckCircle, Settings, BarChart3, Target, TrendingUp, Zap, PieChart } from 'lucide-react';
 import { Fragment } from 'react';
+import { useMetricsStore } from '../../store/metricsStore';
 
 interface AIBuilderDashboardProps {
   files: FileSystemNode[];
 }
 
 export default function AIBuilderDashboard({ files }: AIBuilderDashboardProps) {
-  // Helper to read file content from VFS tree
+  // Get real-time metrics from store
+  const {
+    taskType,
+    classificationMetrics,
+    regressionMetrics,
+    confusionMatrix: storeConfusionMatrix,
+    featureImportance,
+    metricHistory,
+    isEvaluating,
+  } = useMetricsStore();
+
+  // Helper to read file content from VFS tree (for pipeline status)
   const readFile = (path: string) => {
     const findNode = (nodes: FileSystemNode[]): FileSystemNode | undefined => {
       for (const node of nodes) {
@@ -28,8 +40,28 @@ export default function AIBuilderDashboard({ files }: AIBuilderDashboardProps) {
   };
 
   const pipeline = readFile('/config/pipeline.json');
-  const metrics = readFile('/artifacts/metrics.json');
-  const confusionMatrix = readFile('/artifacts/confusion_matrix.json');
+  
+  // Use real-time metrics from store, fall back to file-based metrics
+  const fileMetrics = readFile('/artifacts/metrics.json');
+  const fileConfusionMatrix = readFile('/artifacts/confusion_matrix.json');
+  
+  // Derive metrics from store or files
+  const metrics = classificationMetrics || regressionMetrics ? {
+    accuracy: classificationMetrics?.accuracy ?? fileMetrics?.accuracy ?? 0,
+    f1_score: classificationMetrics?.f1 ?? fileMetrics?.f1_score ?? 0,
+    auc_roc: classificationMetrics?.roc_auc ?? fileMetrics?.auc_roc ?? 0,
+    precision: classificationMetrics?.precision ?? 0,
+    recall: classificationMetrics?.recall ?? 0,
+    mcc: classificationMetrics?.mcc ?? 0,
+    r2: regressionMetrics?.r2 ?? 0,
+    rmse: regressionMetrics?.rmse ?? 0,
+    mae: regressionMetrics?.mae ?? 0,
+    loss_history: Object.values(metricHistory)
+      .filter(h => h.name === 'loss')
+      .flatMap(h => h.values.map(v => v.value)),
+  } : fileMetrics;
+  
+  const confusionMatrix = storeConfusionMatrix?.matrix || fileConfusionMatrix;
 
   if (!pipeline) return <div className="p-8 text-center text-replit-textMuted">Initializing Dashboard...</div>;
 
@@ -100,20 +132,77 @@ export default function AIBuilderDashboard({ files }: AIBuilderDashboardProps) {
           </div>
         </div>
 
-        {/* Metrics Panel */}
+        {/* Metrics Panel - Dynamic based on task type */}
         <div className="col-span-12 lg:col-span-4 grid gap-4">
-           <div className="bg-replit-surface/35 backdrop-blur rounded-xl border border-replit-border/60 p-4">
-             <div className="text-replit-textMuted text-sm mb-1">Model Accuracy</div>
-             <div className="text-3xl font-bold text-replit-text">{(metrics?.accuracy * 100).toFixed(1)}%</div>
-          </div>
-           <div className="bg-replit-surface/35 backdrop-blur rounded-xl border border-replit-border/60 p-4">
-             <div className="text-replit-textMuted text-sm mb-1">F1 Score</div>
-             <div className="text-3xl font-bold text-replit-text">{(metrics?.f1_score * 100).toFixed(1)}%</div>
-          </div>
-           <div className="bg-replit-surface/35 backdrop-blur rounded-xl border border-replit-border/60 p-4">
-             <div className="text-replit-textMuted text-sm mb-1">AUC-ROC</div>
-             <div className="text-3xl font-bold text-replit-text">{(metrics?.auc_roc * 100).toFixed(1)}%</div>
-          </div>
+          {/* Show evaluating status */}
+          {isEvaluating && (
+            <div className="bg-replit-accent/10 backdrop-blur rounded-xl border border-replit-accent/40 p-4">
+              <div className="flex items-center gap-2">
+                <Activity className="w-5 h-5 text-replit-accent animate-pulse" />
+                <span className="text-sm text-replit-text">Computing metrics...</span>
+              </div>
+            </div>
+          )}
+          
+          {/* Classification Metrics */}
+          {(taskType === 'classification' || (!taskType && metrics?.accuracy !== undefined)) && (
+            <>
+              <div className="bg-replit-surface/35 backdrop-blur rounded-xl border border-replit-border/60 p-4">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-replit-textMuted text-sm">Accuracy</div>
+                  <Target className="w-4 h-4 text-replit-accent" />
+                </div>
+                <div className="text-3xl font-bold text-replit-text">{((metrics?.accuracy ?? 0) * 100).toFixed(1)}%</div>
+                <div className="mt-2 h-1 bg-replit-bg rounded-full overflow-hidden">
+                  <div className="h-full bg-replit-accent transition-all duration-500" style={{ width: `${(metrics?.accuracy ?? 0) * 100}%` }} />
+                </div>
+              </div>
+              <div className="bg-replit-surface/35 backdrop-blur rounded-xl border border-replit-border/60 p-4">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-replit-textMuted text-sm">F1 Score</div>
+                  <Zap className="w-4 h-4 text-replit-accent" />
+                </div>
+                <div className="text-3xl font-bold text-replit-text">{((metrics?.f1_score ?? 0) * 100).toFixed(1)}%</div>
+              </div>
+              <div className="bg-replit-surface/35 backdrop-blur rounded-xl border border-replit-border/60 p-4">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-replit-textMuted text-sm">AUC-ROC</div>
+                  <TrendingUp className="w-4 h-4 text-replit-accent" />
+                </div>
+                <div className="text-3xl font-bold text-replit-text">{((metrics?.auc_roc ?? 0) * 100).toFixed(1)}%</div>
+              </div>
+            </>
+          )}
+          
+          {/* Regression Metrics */}
+          {taskType === 'regression' && (
+            <>
+              <div className="bg-replit-surface/35 backdrop-blur rounded-xl border border-replit-border/60 p-4">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-replit-textMuted text-sm">R² Score</div>
+                  <Target className="w-4 h-4 text-replit-accent" />
+                </div>
+                <div className="text-3xl font-bold text-replit-text">{((metrics?.r2 ?? 0) * 100).toFixed(1)}%</div>
+                <div className="mt-2 h-1 bg-replit-bg rounded-full overflow-hidden">
+                  <div className="h-full bg-replit-accent transition-all duration-500" style={{ width: `${Math.max(0, (metrics?.r2 ?? 0) * 100)}%` }} />
+                </div>
+              </div>
+              <div className="bg-replit-surface/35 backdrop-blur rounded-xl border border-replit-border/60 p-4">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-replit-textMuted text-sm">RMSE</div>
+                  <BarChart3 className="w-4 h-4 text-replit-accent" />
+                </div>
+                <div className="text-3xl font-bold text-replit-text">{(metrics?.rmse ?? 0).toFixed(4)}</div>
+              </div>
+              <div className="bg-replit-surface/35 backdrop-blur rounded-xl border border-replit-border/60 p-4">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-replit-textMuted text-sm">MAE</div>
+                  <TrendingUp className="w-4 h-4 text-replit-accent" />
+                </div>
+                <div className="text-3xl font-bold text-replit-text">{(metrics?.mae ?? 0).toFixed(4)}</div>
+              </div>
+            </>
+          )}
         </div>
 
         {/* Training Loss Chart (CSS Only) */}
@@ -138,25 +227,93 @@ export default function AIBuilderDashboard({ files }: AIBuilderDashboardProps) {
           </div>
         </div>
 
-        {/* Confusion Matrix */}
+        {/* Confusion Matrix - Dynamic for any class count */}
         <div className="col-span-12 lg:col-span-4 bg-replit-surface/35 backdrop-blur rounded-xl border border-replit-border/60 p-6">
-          <h2 className="font-semibold text-replit-text mb-4">Confusion Matrix</h2>
-          {confusionMatrix ? (
-            <div className="grid grid-cols-2 gap-2 text-center text-sm">
-                <div className="bg-replit-bg/20 p-2 rounded border border-replit-border/60"></div>
-                <div className="bg-replit-bg/20 p-2 rounded font-semibold text-replit-text border border-replit-border/60">Pred N</div>
-                <div className="bg-replit-bg/20 p-2 rounded font-semibold text-replit-text border border-replit-border/60">Pred P</div>
-                
-                <div className="bg-replit-bg/20 p-2 rounded font-semibold text-replit-text flex items-center justify-center border border-replit-border/60">Actual N</div>
-                <div className="bg-replit-surface/25 p-4 rounded text-replit-text font-bold border border-replit-border/60">{confusionMatrix[0][0]}</div>
-                <div className="bg-replit-surface/25 p-4 rounded text-replit-text font-bold border border-replit-border/60">{confusionMatrix[0][1]}</div>
-
-                <div className="bg-replit-bg/20 p-2 rounded font-semibold text-replit-text flex items-center justify-center border border-replit-border/60">Actual P</div>
-                <div className="bg-replit-surface/25 p-4 rounded text-replit-text font-bold border border-replit-border/60">{confusionMatrix[1][0]}</div>
-                <div className="bg-replit-surface/25 p-4 rounded text-replit-text font-bold border border-replit-border/60">{confusionMatrix[1][1]}</div>
+          <h2 className="font-semibold text-replit-text mb-4 flex items-center gap-2">
+            <PieChart size={16} /> Confusion Matrix
+          </h2>
+          {confusionMatrix && confusionMatrix.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-center text-sm">
+                <thead>
+                  <tr>
+                    <th className="p-2 text-replit-textMuted"></th>
+                    {confusionMatrix[0]?.map((_: number, i: number) => (
+                      <th key={i} className="p-2 text-replit-textMuted text-xs">
+                        {storeConfusionMatrix?.labels?.[i] ?? `Pred ${i}`}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {confusionMatrix.map((row: number[], i: number) => (
+                    <tr key={i}>
+                      <td className="p-2 text-replit-textMuted text-xs font-semibold">
+                        {storeConfusionMatrix?.labels?.[i] ?? `True ${i}`}
+                      </td>
+                      {row.map((val: number, j: number) => {
+                        const total = row.reduce((sum: number, v: number) => sum + v, 0);
+                        const pct = total > 0 ? (val / total) * 100 : 0;
+                        const isCorrect = i === j;
+                        return (
+                          <td
+                            key={j}
+                            className={`p-3 font-bold ${
+                              isCorrect
+                                ? 'bg-replit-success/20 text-replit-text'
+                                : val > 0
+                                  ? 'bg-replit-warning/10 text-replit-textMuted'
+                                  : 'bg-replit-bg/20 text-replit-textMuted'
+                            }`}
+                          >
+                            <div>{val}</div>
+                            <div className="text-xs opacity-60">{pct.toFixed(0)}%</div>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          ) : null}
+          ) : (
+            <div className="text-center text-replit-textMuted py-8">
+              <Activity className="w-8 h-8 mx-auto mb-2 opacity-50" />
+              <p className="text-sm">No confusion matrix available</p>
+            </div>
+          )}
         </div>
+
+        {/* Feature Importance */}
+        {featureImportance && featureImportance.features.length > 0 && (
+          <div className="col-span-12 bg-replit-surface/35 backdrop-blur rounded-xl border border-replit-border/60 p-6">
+            <h2 className="font-semibold text-replit-text mb-4 flex items-center gap-2">
+              <BarChart3 size={16} /> Feature Importance (Top 10)
+            </h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {featureImportance.features.slice(0, 10).map((item, idx) => {
+                const maxImportance = Math.max(...featureImportance.features.slice(0, 10).map(f => f.importance));
+                return (
+                  <div key={idx} className="flex items-center gap-3">
+                    <div className="text-xs text-replit-textMuted w-5 text-right">{idx + 1}</div>
+                    <div className="flex-1">
+                      <div className="flex justify-between items-center mb-1">
+                        <span className="text-sm text-replit-text truncate max-w-[200px]">{item.feature}</span>
+                        <span className="text-xs text-replit-textMuted ml-2">{item.importance.toFixed(4)}</span>
+                      </div>
+                      <div className="h-2 bg-replit-bg rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-replit-accent transition-all duration-500"
+                          style={{ width: `${(item.importance / maxImportance) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

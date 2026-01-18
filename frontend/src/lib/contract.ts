@@ -5,6 +5,7 @@ export type StageID =
   | 'PREPROCESS'
   | 'MODEL_SELECT'
   | 'TRAIN'
+  | 'EVALUATE'
   | 'REVIEW_EDIT'
   | 'EXPORT';
 

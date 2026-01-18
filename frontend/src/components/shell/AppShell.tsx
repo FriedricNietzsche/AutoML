@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import TopBar from './TopBar';
 import ResizablePanel from './ResizablePanel';
 import FilesPanel from '../right/FilesPanel';
+import MetricsPanel from '../right/MetricsPanel';
 import WorkspaceTabs, { type Tab } from '../center/WorkspaceTabs';
 import DashboardPane from '../center/DashboardPane';
 import PreviewPane from '../center/PreviewPane';
@@ -125,6 +126,7 @@ export default function AppShell() {
 
   // Panel state
   const [rightCollapsed, setRightCollapsed] = useLocalStorageState('rightPanelCollapsed', false);
+  const [rightPanelTab, setRightPanelTab] = useLocalStorageState<'files' | 'metrics'>('rightPanelTab', 'files');
   
   // Resizable panels
   const { sizes, handlePointerDown, containerRef } = useResizablePanels({
@@ -577,7 +579,7 @@ export default function AppShell() {
           </div>
         </div>
 
-        {/* Right Panel - Files */}
+        {/* Right Panel - Files & Metrics */}
         <ResizablePanel
           width={sizes.right}
           side="right"
@@ -588,7 +590,7 @@ export default function AppShell() {
               <button
                 onClick={() => setRightCollapsed(false)}
                 className="p-2 rounded-lg hover:bg-replit-surfaceHover/40 text-replit-textMuted"
-                aria-label="Expand file explorer"
+                aria-label="Expand panel"
                 title="Expand (Ctrl+E)"
               >
                 <PanelRightOpen className="w-4 h-4" />
@@ -597,21 +599,72 @@ export default function AppShell() {
               <button
                 onClick={() => {
                   setRightCollapsed(false);
-                  setActiveTabId('dashboard');
+                  setRightPanelTab('files');
                 }}
                 className="p-2 rounded-lg hover:bg-replit-surfaceHover/40 text-replit-textMuted"
-                aria-label="Open Dashboard"
-                title="Dashboard"
+                aria-label="Open Files"
+                title="Files"
               >
-                <FolderOpen className="w-4 h-4" />
+                <FolderTree className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => {
+                  setRightCollapsed(false);
+                  setRightPanelTab('metrics');
+                }}
+                className="p-2 rounded-lg hover:bg-replit-surfaceHover/40 text-replit-textMuted"
+                aria-label="Open Metrics"
+                title="Metrics"
+              >
+                <BarChart3 className="w-4 h-4" />
               </button>
             </>
           }
         >
-          {/* We need to update FilesPanel to accept the new VFS structure if it differs,
-              but for now passing handleFileSelect is key. 
-              Ideally we pass 'files' prop to FilesPanel so it renders our live state instead of its internal mock */}
-          <FilesPanel onFileSelect={handleFileSelect} files={files} onCollapse={() => setRightCollapsed(true)} />
+          {/* Tabbed Panel Header */}
+          <div className="flex flex-col h-full">
+            <div className="h-10 bg-replit-surface/60 backdrop-blur border-b border-replit-border/70 flex items-center shrink-0">
+              <button
+                onClick={() => setRightPanelTab('files')}
+                className={`flex-1 h-full px-4 text-sm font-medium flex items-center justify-center gap-2 transition-colors border-b-2 ${
+                  rightPanelTab === 'files'
+                    ? 'text-replit-text border-replit-accent bg-replit-surface/30'
+                    : 'text-replit-textMuted border-transparent hover:text-replit-text hover:bg-replit-surfaceHover/30'
+                }`}
+              >
+                <FolderTree className="w-4 h-4" />
+                Files
+              </button>
+              <button
+                onClick={() => setRightPanelTab('metrics')}
+                className={`flex-1 h-full px-4 text-sm font-medium flex items-center justify-center gap-2 transition-colors border-b-2 ${
+                  rightPanelTab === 'metrics'
+                    ? 'text-replit-text border-replit-accent bg-replit-surface/30'
+                    : 'text-replit-textMuted border-transparent hover:text-replit-text hover:bg-replit-surfaceHover/30'
+                }`}
+              >
+                <BarChart3 className="w-4 h-4" />
+                Metrics
+              </button>
+              <button
+                onClick={() => setRightCollapsed(true)}
+                className="px-3 h-full text-replit-textMuted hover:text-replit-text hover:bg-replit-surfaceHover/30 transition-colors"
+                aria-label="Collapse panel"
+              >
+                <PanelRightOpen className="w-4 h-4" />
+              </button>
+            </div>
+            
+            {/* Panel Content */}
+            <div className="flex-1 overflow-hidden">
+              {rightPanelTab === 'files' && (
+                <FilesPanel onFileSelect={handleFileSelect} files={files} />
+              )}
+              {rightPanelTab === 'metrics' && (
+                <MetricsPanel />
+              )}
+            </div>
+          </div>
         </ResizablePanel>
       </div>
 
