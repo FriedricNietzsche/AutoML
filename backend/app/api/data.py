@@ -407,8 +407,8 @@ async def download_dataset(project_id: str):
         # Convert to pandas
         df_full = dataset.to_pandas()
         
-        # Sample dataset for faster iteration (limit to 200 rows for fast local training)
-        MAX_SAMPLES = 200  # Reduced from 500
+        # Sample dataset for faster iteration (limit to 100 rows for ultra-fast local training)
+        MAX_SAMPLES = 100  # Reduced from 200
         
         if len(df_full) > MAX_SAMPLES:
             print(f"[API] Large dataset detected ({len(df_full)} rows). Sampling {MAX_SAMPLES} for demo.")
@@ -581,7 +581,7 @@ async def ingest_hf(
     project_id: str,
     dataset: str = Body(..., embed=True),
     split: str = Body("train", embed=True),
-    max_rows: int = Body(200, embed=True),  # Reduced from 500 for faster training
+    max_rows: int = Body(100, embed=True),  # Reduced from 200 for ultra-fast training
 ):
     """
     Ingest a dataset from Hugging Face Hub using `datasets`.

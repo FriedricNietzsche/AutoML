@@ -43,8 +43,8 @@ class TrainConfig:
     target: str
     task_type: str  # classification|regression
     model_id: str = "auto"  # auto|rf|xgb|logreg|linear
-    steps: int = 10  # Reduced from 50 for faster training
-    test_size: float = 0.2
+    steps: int = 5  # Reduced from 10 for ultra-fast training
+    test_size: float = 0.3  # Increased from 0.2 to use less data for training
     random_state: int = 42
 
 
@@ -80,31 +80,41 @@ class TabularTrainer:
         if self.config.task_type == "classification":
             if model_id == "xgb" and XGBClassifier is not None:
                 model = XGBClassifier(
-                    n_estimators=20,  # Reduced from 200
-                    max_depth=3,  # Reduced from 6
-                    learning_rate=0.1,
+                    n_estimators=5,  # Reduced from 20 for ultra-fast training
+                    max_depth=2,  # Reduced from 3
+                    learning_rate=0.3,  # Increased for faster convergence
                     random_state=self.config.random_state,
                     eval_metric="logloss",
                 )
             elif model_id == "logreg":
-                model = LogisticRegression(max_iter=50 if fast else 100)  # Reduced from 150/300
+                model = LogisticRegression(max_iter=30 if fast else 50, random_state=self.config.random_state)  # Reduced from 50/100
             else:
-                n_estimators = 5 if fast else 10  # Reduced from 10/50
-                model = RandomForestClassifier(n_estimators=n_estimators, random_state=self.config.random_state)
+                n_estimators = 3 if fast else 5  # Reduced from 5/10
+                max_depth = 5  # Limit tree depth for speed
+                model = RandomForestClassifier(
+                    n_estimators=n_estimators, 
+                    max_depth=max_depth,
+                    random_state=self.config.random_state
+                )
         else:
             if model_id == "xgb" and XGBRegressor is not None:
                 model = XGBRegressor(
-                    n_estimators=20,  # Reduced from 200
-                    max_depth=3,  # Reduced from 6
-                    learning_rate=0.1,
+                    n_estimators=5,  # Reduced from 20 for ultra-fast training
+                    max_depth=2,  # Reduced from 3
+                    learning_rate=0.3,  # Increased for faster convergence
                     random_state=self.config.random_state,
                     objective="reg:squarederror",
                 )
             elif model_id == "linear":
                 model = LinearRegression()
             else:
-                n_estimators = 5 if fast else 10  # Reduced from 10/50
-                model = RandomForestRegressor(n_estimators=n_estimators, random_state=self.config.random_state)
+                n_estimators = 3 if fast else 5  # Reduced from 5/10
+                max_depth = 5  # Limit tree depth for speed
+                model = RandomForestRegressor(
+                    n_estimators=n_estimators,
+                    max_depth=max_depth,
+                    random_state=self.config.random_state
+                )
 
         pipeline = Pipeline(steps=[("preprocess", preprocessor), ("model", model)])
         return pipeline
