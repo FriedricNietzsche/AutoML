@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
 import { ArrowLeft, ArrowRight, RotateCw, ExternalLink } from 'lucide-react';
 import type { FileSystemNode } from '../../lib/types';
+import type { BuildSession, BuildStatus } from '../../lib/buildSession';
 import EmptyPreview from './preview/EmptyPreview';
-import TrainingLoaderV2 from './preview/TrainingLoaderV2';
+import RealBackendLoader from './loader/RealBackendLoader';
 import APIDocsPane from './preview/APIDocsPane';
-import type { BuildStatus } from '../../lib/buildSession';
 
 interface PreviewPaneProps {
   files: FileSystemNode[];
+  session: BuildSession | null;
   isRunning: boolean;
   onSimulationComplete: () => void;
   updateFileContent: (path: string, content: string | ((prev: string) => string)) => void;
@@ -16,7 +17,8 @@ interface PreviewPaneProps {
 }
 
 export default function PreviewPane({ 
-  files, 
+  files,
+  session,
   isRunning, 
   onSimulationComplete,
   updateFileContent,
@@ -83,7 +85,8 @@ export default function PreviewPane({
       <div className="flex-1 overflow-hidden relative">
          {viewState === 'empty' && <EmptyPreview />}
          {viewState === 'processing' && (
-          <TrainingLoaderV2 
+          <RealBackendLoader
+                session={session}
                 onComplete={handleComplete} 
                 updateFileContent={updateFileContent} 
             />

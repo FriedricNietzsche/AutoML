@@ -128,11 +128,28 @@ class Conductor:
         return self._serialize_state(state)
 
     async def confirm(self, project_id: str) -> Dict[str, Any]:
+        """
+        Confirm the current stage and advance to the next one.
+        Only works if the current stage is WAITING_CONFIRMATION or COMPLETED.
+        """
         async with self._lock:
             state = self._projects.get(project_id) or self._default_project(project_id)
             self._projects[project_id] = state
             current_stage: StageID = state["current_stage"]
             stages: Dict[StageID, StageState] = state["stages"]
+            current_status = stages[current_stage]["status"]
+
+            # Validation: Only allow confirmation if stage is ready
+            if current_status not in (StageStatus.WAITING_CONFIRMATION, StageStatus.COMPLETED):
+                # Return current state without making changes
+                print(f"[Conductor] ❌ CONFIRM REJECTED: {current_stage.value} is {current_status.value}, expected WAITING_CONFIRMATION")
+                print(f"[Conductor] → User must wait for stage to complete before confirming")
+                return {
+                    **self._serialize_state(state),
+                    "error": f"Stage {current_stage.value} is not ready for confirmation (status: {current_status.value})"
+                }
+
+            print(f"[Conductor] ✅ Confirming stage: {current_stage.value} ({current_status.value})")
 
             updates: List[Tuple[StageID, StageStatus, str]] = []
             if stages[current_stage]["status"] != StageStatus.COMPLETED:
@@ -146,6 +163,7 @@ class Conductor:
                 stages[next_stage]["status"] = StageStatus.IN_PROGRESS
                 state["current_stage"] = next_stage
                 updates.append((next_stage, StageStatus.IN_PROGRESS, "Advancing to next stage"))
+                print(f"[Conductor] → Advancing to {next_stage.value}")
             state["waiting_confirmation"] = None
             snapshot = self._serialize_state(state)
 
@@ -182,6 +200,11 @@ class Conductor:
             stage_id=current_stage,
             stage_status=stage_state["status"],
         )
+
+    def _get_current_stage_id(self, project_id: str) -> StageID:
+        """Get the current stage ID for a project (synchronous helper)."""
+        state = self._projects.get(project_id) or self._default_project(project_id)
+        return state["current_stage"]
 
 
 # Global conductor instance

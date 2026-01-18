@@ -97,11 +97,34 @@ export const useProjectStore = create<ProjectStoreState>((set, get) => ({
   wsClient: null,
 
   connect: (opts) => {
-    const projectId = opts?.projectId ?? get().projectId;
-    const wsBase = opts?.wsBase ?? get().wsBase;
+    const currentState = get();
+    const projectId = opts?.projectId ?? currentState.projectId;
+    const wsBase = opts?.wsBase ?? currentState.wsBase;
     const apiBase = resolveHttpBase(wsBase);
 
-    get().wsClient?.close();
+    // Guard: Don't reconnect if already connected to the same project
+    if (
+      currentState.connectionStatus === 'open' &&
+      currentState.projectId === projectId &&
+      currentState.wsBase === wsBase &&
+      currentState.wsClient
+    ) {
+      console.log('Already connected to', projectId, '- skipping reconnect');
+      return;
+    }
+
+    // Guard: Don't create new connection if currently connecting to the same project
+    if (
+      currentState.connectionStatus === 'connecting' &&
+      currentState.projectId === projectId &&
+      currentState.wsBase === wsBase
+    ) {
+      console.log('Already connecting to', projectId, '- skipping duplicate');
+      return;
+    }
+
+    // Close existing connection if any
+    currentState.wsClient?.close();
 
     const client = createWebSocketClient({
       projectId,

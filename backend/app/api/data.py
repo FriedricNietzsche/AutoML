@@ -24,6 +24,7 @@ from app.events.schema import (
     StageStatus,
 )
 from app.orchestrator.conductor import conductor
+from app.orchestrator.pipeline import orchestrator as pipeline_orchestrator
 from app.api.assets import ASSET_ROOT
 
 router = APIRouter(prefix="/api/projects", tags=["data"])
@@ -159,6 +160,9 @@ async def _emit_waiting_confirmation(project_id: str, summary: str, candidates: 
 
 @router.post("/{project_id}/upload")
 async def upload_dataset(project_id: str, file: UploadFile = File(...)):
+    """Upload a dataset file and store selection in orchestrator context"""
+    from ..orchestrator.pipeline import orchestrator
+    
     project_dir = _project_dir(project_id)
     dest = project_dir / file.filename
     with dest.open("wb") as f:
@@ -173,13 +177,179 @@ async def upload_dataset(project_id: str, file: UploadFile = File(...)):
     sample_path = project_dir / "sample.csv"
     df.head(200).to_csv(sample_path, index=False)
 
-    # Emit events and advance stages
+    # Store the uploaded dataset in orchestrator context
+    async with orchestrator._lock:
+        context = orchestrator._get_context(project_id)
+        context["selected_dataset"] = {
+            "source": "upload",
+            "filename": file.filename,
+            "path": str(dest),
+            "rows": len(df),
+            "columns": list(df.columns)
+        }
+
+    # Emit events
     await _emit_sample(project_id, df, sample_path)
-    await conductor.transition_to(project_id, StageID.DATA_SOURCE, StageStatus.COMPLETED, "Data uploaded")
-    await conductor.transition_to(project_id, StageID.PROFILE_DATA, StageStatus.IN_PROGRESS, "Profiling dataset")
-    await _emit_profile(project_id, df, project_dir / "profile")
+    
+    # Note: Don't auto-advance stages here - let user confirm first
+    # The orchestrator will handle stage transitions when user clicks confirm
 
     return {"status": "ok", "rows": len(df), "columns": list(df.columns)}
+
+
+@router.post("/{project_id}/dataset/select")
+async def select_dataset(project_id: str, dataset_id: str = Body(..., embed=True)):
+    """
+    User selects a dataset from the suggested candidates.
+    Downloads it from HuggingFace and stores path in orchestrator context.
+    """
+    print(f"[API] User selected dataset: {dataset_id} for project: {project_id}")
+    
+    async with pipeline_orchestrator._lock:
+        context = pipeline_orchestrator._get_context(project_id)
+        # Find the selected dataset from candidates
+        candidates = context.get("dataset_candidates", [])
+        selected = next((d for d in candidates if d.get("id") == dataset_id), None)
+        
+        if not selected:
+            raise HTTPException(status_code=404, detail=f"Dataset {dataset_id} not found in candidates")
+        
+        # Publish download start event
+        await event_bus.publish_event(
+            project_id=project_id,
+            event_name=EventType.STAGE_STATUS,
+            payload={
+                "stage": StageID.DATA_SOURCE.value,
+                "status": StageStatus.IN_PROGRESS.value,
+                "message": f"⬇️ Downloading dataset: {selected.get('name', dataset_id)}...",
+                "details": "This may take 30-60 seconds for large datasets"
+            },
+            stage_id=StageID.DATA_SOURCE,
+            stage_status=StageStatus.IN_PROGRESS,
+        )
+        
+        # Download dataset from HuggingFace
+        print(f"[API] Downloading dataset from HuggingFace: {dataset_id}")
+        try:
+            from datasets import load_dataset
+            import pandas as pd
+            
+            # Publish fetching event
+            await event_bus.publish_event(
+                project_id=project_id,
+                event_name=EventType.STAGE_STATUS,
+                payload={
+                    "stage": StageID.DATA_SOURCE.value,
+                    "status": StageStatus.IN_PROGRESS.value,
+                    "message": f"📦 Fetching dataset metadata from HuggingFace...",
+                },
+                stage_id=StageID.DATA_SOURCE,
+                stage_status=StageStatus.IN_PROGRESS,
+            )
+            
+            # Load from HuggingFace
+            dataset = load_dataset(dataset_id, split='train[:1000]')  # Limit to 1000 samples for speed
+            
+            # Publish processing event
+            await event_bus.publish_event(
+                project_id=project_id,
+                event_name=EventType.STAGE_STATUS,
+                payload={
+                    "stage": StageID.DATA_SOURCE.value,
+                    "status": StageStatus.IN_PROGRESS.value,
+                    "message": f"🔄 Processing dataset (1000 samples)...",
+                },
+                stage_id=StageID.DATA_SOURCE,
+                stage_status=StageStatus.IN_PROGRESS,
+            )
+            
+            # Convert to pandas DataFrame
+            df = dataset.to_pandas()
+            
+            # Save to project directory
+            project_dir = _project_dir(project_id)
+            dataset_path = project_dir / f"{dataset_id.replace('/', '_')}.csv"
+            df.to_csv(dataset_path, index=False)
+            
+            print(f"[API] ✅ Downloaded and saved {len(df)} rows to {dataset_path}")
+            
+            # Store selection with path
+            selected["path"] = str(dataset_path)
+            selected["rows"] = len(df)
+            selected["columns"] = list(df.columns)
+            context["selected_dataset"] = selected
+            
+            # Publish success event
+            await event_bus.publish_event(
+                project_id=project_id,
+                event_name=EventType.DATASET_SELECTED,
+                payload={
+                    "dataset": selected,
+                    "message": f"✅ Dataset downloaded: {len(df)} rows, {len(df.columns)} columns"
+                },
+                stage_id=StageID.DATA_SOURCE,
+                stage_status=StageStatus.IN_PROGRESS,
+            )
+            
+            return {"status": "ok", "selected": selected, "path": str(dataset_path)}
+            
+        except Exception as e:
+            print(f"[API] ❌ Error downloading dataset: {e}")
+            
+            # Publish error event
+            await event_bus.publish_event(
+                project_id=project_id,
+                event_name=EventType.STAGE_STATUS,
+                payload={
+                    "stage": StageID.DATA_SOURCE.value,
+                    "status": StageStatus.ERROR.value,
+                    "message": f"❌ Failed to download dataset: {str(e)}",
+                },
+                stage_id=StageID.DATA_SOURCE,
+                stage_status=StageStatus.ERROR,
+            )
+            
+            # Still store selection but without path - will use mock data
+            context["selected_dataset"] = selected
+            raise HTTPException(status_code=500, detail=f"Failed to download dataset: {e}")
+
+
+@router.post("/{project_id}/model/select")
+async def select_model(project_id: str, model_id: str = Body(..., embed=True)):
+    """
+    User selects a model from the recommended candidates.
+    Stores the selection in orchestrator context.
+    """
+    print(f"[API] User selected model: {model_id} for project: {project_id}")
+    
+    async with pipeline_orchestrator._lock:
+        context = pipeline_orchestrator._get_context(project_id)
+        # Find the selected model from candidates
+        candidates = context.get("model_candidates", [])
+        selected = next((m for m in candidates if m.get("id") == model_id), None)
+        
+        if not selected:
+            raise HTTPException(status_code=404, detail=f"Model {model_id} not found in candidates")
+        
+        # Store selection
+        context["selected_model"] = selected
+        print(f"[API] ✅ Selected model: {selected.get('name', model_id)}")
+        
+        # Publish event
+        await event_bus.publish_event(
+            project_id=project_id,
+            event_name=EventType.STAGE_STATUS,
+            payload={
+                "stage": StageID.MODEL_SELECT.value,
+                "status": StageStatus.IN_PROGRESS.value,
+                "message": f"✅ Selected model: {selected.get('name', model_id)}",
+                "model": selected
+            },
+            stage_id=StageID.MODEL_SELECT,
+            stage_status=StageStatus.IN_PROGRESS,
+        )
+        
+        return {"status": "ok", "selected": selected}
 
 
 @router.get("/hf/search")

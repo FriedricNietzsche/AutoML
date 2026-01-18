@@ -152,10 +152,14 @@ export default function AppShell() {
     hydrate: state.hydrate,
   }));
 
+  // Connect to WebSocket ONCE on mount
+  // DO NOT add connect/hydrate to dependencies - they change on every render
+  // Only reconnect if projectId or wsBase changes
   useEffect(() => {
     connectProject({ projectId, wsBase });
     hydrate();
-  }, [connectProject, hydrate, projectId, wsBase]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, wsBase]);
 
   // (VFS helpers are hoisted outside the component to keep updateFileContent stable)
   
@@ -478,7 +482,8 @@ export default function AppShell() {
     switch (activeTab.type) {
       case 'preview':
         return <PreviewPane 
-            files={files} 
+            files={files}
+            session={session}
             isRunning={isRunning} 
             onSimulationComplete={() => {
               completePipeline();
