@@ -5,6 +5,8 @@ Handles the complete flow: PARSE_INTENT → DATA_SOURCE → ... → EXPORT
 """
 import asyncio
 import os
+import json
+import pickle
 from typing import Any, Dict, Optional
 from pathlib import Path
 
@@ -102,9 +104,6 @@ class PipelineOrchestrator:
             
             elif stage_id == StageID.TRAIN:
                 await self._execute_train(project_id)
-            
-            elif stage_id == StageID.EVALUATE:
-                await self._execute_evaluate(project_id)
             
             elif stage_id == StageID.REVIEW_EDIT:
                 await self._execute_review_edit(project_id)
@@ -244,20 +243,65 @@ class PipelineOrchestrator:
         dataset_path = selected_dataset.get("path")
         
         if not dataset_path:
-            # If HuggingFace dataset, we'd need to download it first
-            # For now, use a placeholder
-            print("[PROFILE_DATA] ⚠️ Dataset path not found - using mock profile")
-            profile = {
-                "rows": 10000,
-                "columns": 15,
-                "summary": {
-                    "total_missing_values": 150,
-                    "missing_percentage": 1.0,
-                    "numeric_column_count": 10,
-                    "categorical_column_count": 5
+            # Download HuggingFace dataset if needed
+            dataset_id = selected_dataset.get("id")
+            if dataset_id and "/" in dataset_id:  # HuggingFace format: username/dataset
+                print(f"[PROFILE_DATA] Downloading HuggingFace dataset: {dataset_id}...")
+                try:
+                    from datasets import load_dataset
+                    from pathlib import Path
+                    
+                    # Download dataset
+                    hf_dataset = load_dataset(dataset_id, split="train")
+                    
+                    # Convert to pandas and save
+                    import pandas as pd
+                    df = hf_dataset.to_pandas()
+                    
+                    # Create project directory
+                    project_dir = Path(f"data/assets/projects/{project_id}")
+                    project_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    # Save as CSV
+                    dataset_path = project_dir / f"{dataset_id.split('/')[-1]}.csv"
+                    df.to_csv(dataset_path, index=False)
+                    print(f"[PROFILE_DATA] ✅ Downloaded and saved to {dataset_path}")
+                    
+                    # Update context with path
+                    async with self._lock:
+                        context["selected_dataset"]["path"] = str(dataset_path)
+                        context["dataset_path"] = str(dataset_path)
+                    
+                except Exception as e:
+                    print(f"[PROFILE_DATA] ❌ Failed to download dataset: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    profile = {"error": f"Failed to download dataset: {str(e)}"}
+                    async with self._lock:
+                        context["data_profile"] = profile
+                    
+                    await conductor.waiting_for_confirmation(
+                        project_id=project_id,
+                        stage_id=StageID.PROFILE_DATA,
+                        summary=f"Error downloading dataset: {str(e)}",
+                        next_actions=["Select a different dataset"]
+                    )
+                    return
+            else:
+                print("[PROFILE_DATA] ⚠️ Dataset path not found - using mock profile")
+                profile = {
+                    "rows": 10000,
+                    "columns": 15,
+                    "summary": {
+                        "total_missing_values": 150,
+                        "missing_percentage": 1.0,
+                        "numeric_column_count": 10,
+                        "categorical_column_count": 5
+                    }
                 }
-            }
-        else:
+        
+        # Profile the dataset
+        if dataset_path:
             try:
                 profile = agent.profile_dataset(dataset_path)
             except Exception as e:
@@ -788,47 +832,6 @@ class PipelineOrchestrator:
         
         print("[TRAIN] ✅ Complete")
     
-    async def _execute_evaluate(self, project_id: str) -> None:
-        """Stage 7: Interactive model evaluation - Try your model"""
-        context = self._get_context(project_id)
-        
-        print("[EVALUATE] Starting interactive evaluation...")
-        print("[1/3] Loading sample data...")
-        
-        # Get project directory
-        project_dir = Path(f"data/assets/projects/{project_id}")
-        
-        # Load training metrics for display
-        training_metrics = context.get("training_metrics", {})
-        
-        # Publish evaluation ready event with sample data
-        await event_bus.publish_event(
-            project_id=project_id,
-            event_name=EventType.STAGE_STATUS,
-            payload={
-                "stage": StageID.EVALUATE.value,
-                "status": StageStatus.IN_PROGRESS.value,
-                "message": "✅ Model ready for testing! Try predictions with sample data.",
-                "metrics": training_metrics,
-                "interactive": True
-            },
-            stage_id=StageID.EVALUATE,
-            stage_status=StageStatus.IN_PROGRESS,
-        )
-        
-        print("[2/3] Model evaluation interface ready...")
-        print("[3/3] Waiting for user interaction...")
-        
-        # Wait for user confirmation to proceed to export
-        await conductor.waiting_for_confirmation(
-            project_id=project_id,
-            stage_id=StageID.EVALUATE,
-            summary=f"✅ Model trained successfully! Try predictions above or continue to export.",
-            next_actions=["Test predictions with sample data", "Continue to export"]
-        )
-        
-        print("[EVALUATE] ✅ Complete")
-    
     async def _execute_review_edit(self, project_id: str) -> None:
         """Stage 7: Review and evaluate trained model"""
         context = self._get_context(project_id)
@@ -868,15 +871,17 @@ class PipelineOrchestrator:
     
     async def _execute_export(self, project_id: str) -> None:
         """Stage 8: Export trained model and generate notebook"""
-        import json
         context = self._get_context(project_id)
         
         print("[EXPORT] Starting export process...")
-        print("[1/5] Gathering project information...")
+        print("[1/7] Gathering project information...")
         
         # Generate timestamp for unique export
         from datetime import datetime
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Add timestamp to context for metadata
+        context["export_timestamp"] = timestamp
         
         # Get project details
         project_dir = Path(f"data/assets/projects/{project_id}")
@@ -983,7 +988,30 @@ class PipelineOrchestrator:
             shutil.copytree(model_path, model_export_path)
         print(f"[EXPORT] ✅ Model copied: {model_export_path}")
         
-        print("[5/5] Creating ZIP bundle...")
+        print("[5/7] Generating model metadata files...")
+        # Create metadata with features, parameters, preprocessing info
+        metadata = self._generate_model_metadata(
+            project_id=project_id,
+            context=context,
+            training_metrics=training_metrics,
+            model_path=model_path,
+            task_type=task_type,
+            model_name=model_name
+        )
+        
+        # Save as JSON (human-readable)
+        metadata_json_path = export_dir / "model_metadata.json"
+        with open(metadata_json_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        print(f"[EXPORT] ✅ Metadata JSON created: {metadata_json_path}")
+        
+        # Save as PKL (for programmatic use)
+        metadata_pkl_path = export_dir / "model_metadata.pkl"
+        with open(metadata_pkl_path, 'wb') as f:
+            pickle.dump(metadata, f)
+        print(f"[EXPORT] ✅ Metadata PKL created: {metadata_pkl_path}")
+        
+        print("[6/7] Creating ZIP bundle...")
         import zipfile
         zip_filename = f"{project_id}_export_{timestamp}.zip"
         zip_path = project_dir / zip_filename
@@ -996,6 +1024,8 @@ class PipelineOrchestrator:
         file_size_mb = zip_path.stat().st_size / (1024 * 1024)
         print(f"[EXPORT] ✅ ZIP created: {zip_path} ({file_size_mb:.2f} MB)")
         
+        print("[7/7] Publishing export event...")
+        
         # Publish export complete event
         export_info = {
             "zip_filename": zip_filename,
@@ -1005,7 +1035,9 @@ class PipelineOrchestrator:
             "files": {
                 "notebook": "inference.ipynb",
                 "instructions": "INFERENCE_INSTRUCTIONS.txt",
-                "model": Path(model_path).name
+                "model": Path(model_path).name,
+                "metadata_json": "model_metadata.json",
+                "metadata_pkl": "model_metadata.pkl"
             },
             "size_mb": round(file_size_mb, 2)
         }
@@ -1354,6 +1386,55 @@ QUICK START
         instructions += f"""
 
 ================================================================================
+MODEL METADATA FILES
+================================================================================
+
+Two metadata files are included with this export:
+
+1. model_metadata.json (Human-readable JSON format)
+   - Contains model configuration, features, parameters, and metrics
+   - Can be opened in any text editor
+   - Easy to share and document
+
+2. model_metadata.pkl (Python pickle format)
+   - Same information as JSON but in Python-native format
+   - Can contain complex Python objects
+   - Use for programmatic access in Python scripts
+
+Loading Metadata (JSON):
+   import json
+   
+   with open('model_metadata.json', 'r') as f:
+       metadata = json.load(f)
+   
+   # Access information
+   feature_names = metadata['features']['feature_names']
+   model_params = metadata['parameters']
+   preprocessing_steps = metadata['preprocessing']['steps_applied']
+
+Loading Metadata (PKL):
+   import pickle
+   
+   with open('model_metadata.pkl', 'rb') as f:
+       metadata = pickle.load(f)
+   
+   # Same structure as JSON version
+   feature_names = metadata['features']['feature_names']
+
+What's Included:
+   - Model name and task type
+   - Feature names and data types
+   - Model hyperparameters
+   - Preprocessing steps applied
+   - Training metrics and performance
+
+Use Cases:
+   - Verify input data has correct features before prediction
+   - Understand what preprocessing was applied
+   - Reproduce the model training process
+   - Document model configuration for compliance/auditing
+
+================================================================================
 MODEL PERFORMANCE
 ================================================================================
 
@@ -1395,6 +1476,120 @@ For more details, see inference.ipynb
         
         with open(path, 'w') as f:
             f.write(instructions)
+    
+    def _generate_model_metadata(
+        self,
+        project_id: str,
+        context: Dict[str, Any],
+        training_metrics: Dict[str, Any],
+        model_path: str,
+        task_type: str,
+        model_name: str
+    ) -> Dict[str, Any]:
+        """
+        Generate comprehensive model metadata including features, parameters, and preprocessing info.
+        
+        Args:
+            project_id: Project ID
+            context: Pipeline context with preprocessing info
+            training_metrics: Training metrics from model
+            model_path: Path to trained model file
+            task_type: Type of ML task (classification/regression)
+            model_name: Name of the model algorithm
+            
+        Returns:
+            Dictionary containing model metadata
+        """
+        import joblib
+        import pandas as pd
+        
+        metadata = {
+            "model_info": {
+                "model_name": model_name,
+                "task_type": task_type,
+                "training_date": context.get("export_timestamp", "unknown"),
+                "project_id": project_id
+            },
+            "features": {},
+            "parameters": {},
+            "preprocessing": {},
+            "metrics": training_metrics
+        }
+        
+        # Extract feature information
+        try:
+            # Try to load processed data to get feature names and types
+            project_dir = Path(f"./projects/{project_id}")
+            processed_csv = project_dir / "processed_data.csv"
+            
+            if processed_csv.exists():
+                df = pd.read_csv(processed_csv)
+                # Remove target column if present
+                target_col = context.get("parsed_intent", {}).get("target_column")
+                if target_col and target_col in df.columns:
+                    df = df.drop(columns=[target_col])
+                
+                metadata["features"] = {
+                    "feature_names": df.columns.tolist(),
+                    "feature_types": {col: str(dtype) for col, dtype in df.dtypes.items()},
+                    "num_features": len(df.columns)
+                }
+            else:
+                # Fallback: try to extract from model object
+                model_obj = joblib.load(model_path)
+                if isinstance(model_obj, dict) and "feature_names" in model_obj:
+                    feature_names = model_obj["feature_names"]
+                elif hasattr(model_obj, "feature_names_in_"):
+                    feature_names = model_obj.feature_names_in_.tolist()
+                else:
+                    feature_names = []
+                
+                metadata["features"] = {
+                    "feature_names": feature_names,
+                    "feature_types": {},
+                    "num_features": len(feature_names)
+                }
+        except Exception as e:
+            print(f"[METADATA] Warning: Could not extract feature info: {e}")
+            metadata["features"] = {
+                "feature_names": [],
+                "feature_types": {},
+                "num_features": 0
+            }
+        
+        # Extract model parameters
+        try:
+            model_obj = joblib.load(model_path)
+            actual_model = model_obj.get("model") if isinstance(model_obj, dict) else model_obj
+            
+            if hasattr(actual_model, "get_params"):
+                params = actual_model.get_params()
+                # Convert numpy types to native Python types for JSON serialization
+                metadata["parameters"] = {
+                    k: (int(v) if hasattr(v, "item") else v) 
+                    for k, v in params.items()
+                    if v is not None and not callable(v)
+                }
+            else:
+                metadata["parameters"] = {}
+        except Exception as e:
+            print(f"[METADATA] Warning: Could not extract model parameters: {e}")
+            metadata["parameters"] = {}
+        
+        # Extract preprocessing information
+        try:
+            preprocessing_info = context.get("preprocessing_summary", {})
+            metadata["preprocessing"] = {
+                "steps_applied": preprocessing_info.get("steps", []),
+                "missing_values_handled": preprocessing_info.get("missing_handled", False),
+                "categorical_encoding": preprocessing_info.get("encoding_method", "unknown"),
+                "scaling_applied": preprocessing_info.get("scaling", False)
+            }
+        except Exception as e:
+            print(f"[METADATA] Warning: Could not extract preprocessing info: {e}")
+            metadata["preprocessing"] = {}
+        
+        return metadata
     
     async def handle_confirmation(self, project_id: str, user_selection: Optional[Dict[str, Any]] = None) -> None:
         """

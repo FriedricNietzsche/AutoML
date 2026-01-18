@@ -144,12 +144,15 @@ Sample Data Structure:
 
 Create a Jupyter notebook with code cells and markdown cells that shows how to:
 1. Load the trained model from a joblib file
-2. Make predictions on new data
-3. Interpret the results
+2. Load and explore the model metadata files
+3. Make predictions on new data
+4. Interpret the results
 
 IMPORTANT REQUIREMENTS:
 - The model is saved as a dictionary: {{'model': sklearn_model, 'feature_names': list, 'task_type': str}}
 - You MUST extract the model: model_data = joblib.load('file'); model = model_data['model']
+- Two metadata files are included: model_metadata.json (JSON) and model_metadata.pkl (pickle)
+- Show how to load the metadata to get feature names and model parameters
 - Use the EXACT feature names provided in the context
 - Create realistic example data based on the actual features
 - Include helpful comments and explanations
@@ -157,6 +160,10 @@ IMPORTANT REQUIREMENTS:
 
 Context:
 {context}
+
+Additional Files Available:
+- model_metadata.json: Contains feature names, types, parameters, preprocessing info, and metrics
+- model_metadata.pkl: Same information in Python pickle format
 
 Return a JSON array of notebook cells in this EXACT format:
 [
@@ -178,6 +185,8 @@ Include at least:
 - Title markdown
 - Imports code cell
 - Load model code cell (with dictionary extraction!)
+- Load metadata code cell (show both JSON and pickle methods)
+- Explore metadata markdown (explain what's in the metadata)
 - Example prediction code cell
 - Results interpretation markdown
 

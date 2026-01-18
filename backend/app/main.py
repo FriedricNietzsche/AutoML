@@ -42,8 +42,6 @@ from app.api.intent import router as intent_router
 from app.api.data import router as data_router
 from app.api.train import router as train_router
 from app.api.export import router as export_router
-from app.api.inference import router as inference_router
-from app.api.predict import router as predict_router
 
 # Include WebSocket router
 app.include_router(ws_router)
@@ -65,12 +63,6 @@ app.include_router(data_router)
 
 # Include training router
 app.include_router(train_router)
-
-# Include inference router
-app.include_router(inference_router)
-
-# Include prediction router
-app.include_router(predict_router, prefix="/api/projects", tags=["predictions"])
 
 # Include report/export router
 app.include_router(export_router)

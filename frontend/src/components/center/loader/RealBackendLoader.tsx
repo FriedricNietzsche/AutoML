@@ -25,13 +25,6 @@ export default function RealBackendLoader({ session, onComplete, updateFileConte
   const [showUploadDialog, setShowUploadDialog] = useState(false);
   const [uploadingFile, setUploadingFile] = useState(false);
   const [hasStageError, setHasStageError] = useState(false);
-  
-  // Prediction/Evaluation state
-  const [, setPredictionInput] = useState<Record<string, any>>({});
-  const [predictionResult, setPredictionResult] = useState<any>(null);
-  const [isPredicting, setIsPredicting] = useState(false);
-  const [sampleData, setSampleData] = useState<any[]>([]);
-  const [loadingSamples, setLoadingSamples] = useState(false);
 
   const {
     connectionStatus,
@@ -221,65 +214,6 @@ export default function RealBackendLoader({ session, onComplete, updateFileConte
       setSelectedModelId(null);
     }
   }, [projectId]);
-
-  // Load sample data for predictions
-  const loadSampleData = useCallback(async () => {
-    try {
-      setLoadingSamples(true);
-      console.log('[RealBackendLoader] Loading sample data...');
-
-      const response = await fetch(`http://localhost:8000/api/projects/${projectId}/sample-data?num_samples=3`);
-
-      if (!response.ok) {
-        throw new Error(`Failed to load samples: ${response.statusText}`);
-      }
-
-      const result = await response.json();
-      console.log('[RealBackendLoader] Sample data loaded:', result);
-      setSampleData(result.samples || []);
-      
-    } catch (err) {
-      console.error('[RealBackendLoader] Failed to load sample data:', err);
-    } finally {
-      setLoadingSamples(false);
-    }
-  }, [projectId]);
-
-  // Make prediction
-  const handlePredict = useCallback(async (inputData: Record<string, any>) => {
-    try {
-      setIsPredicting(true);
-      setPredictionResult(null);
-      console.log('[RealBackendLoader] Making prediction with:', inputData);
-
-      const response = await fetch(`http://localhost:8000/api/projects/${projectId}/predict`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(inputData),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Prediction failed: ${response.statusText}`);
-      }
-
-      const result = await response.json();
-      console.log('[RealBackendLoader] Prediction result:', result);
-      setPredictionResult(result);
-      
-    } catch (err) {
-      console.error('[RealBackendLoader] Prediction error:', err);
-      setErrorDetails(err instanceof Error ? err.message : 'Prediction failed');
-    } finally {
-      setIsPredicting(false);
-    }
-  }, [projectId]);
-
-  // Load sample data when EVALUATE stage is reached
-  useEffect(() => {
-    if (currentStage === 'EVALUATE' && stages[currentStage]?.status === 'WAITING_CONFIRMATION') {
-      loadSampleData();
-    }
-  }, [currentStage, stages, loadSampleData]);
 
   // Connection error - backend not available
   if (connectionStatus === 'error' || connectionStatus === 'closed') {
@@ -759,135 +693,6 @@ export default function RealBackendLoader({ session, onComplete, updateFileConte
                               </div>
                             )}
                           </div>
-                        ) : eventName === 'STAGE_STATUS' && (payload as any)?.stage === 'EVALUATE' && (payload as any)?.interactive ? (
-                          /* Special rendering for EVALUATE stage - Try Your Model */
-                          <div className="mt-3 space-y-4">
-                            <div className="bg-gradient-to-br from-purple-500/10 to-blue-500/10 border-2 border-purple-500/50 rounded-lg p-4">
-                              <div className="flex items-start gap-3">
-                                <div className="text-3xl">🎯</div>
-                                <div className="flex-1">
-                                  <h4 className="text-lg font-bold text-purple-400 mb-2">Try Your Model!</h4>
-                                  <p className="text-sm text-replit-textMuted mb-4">
-                                    Your model is trained and ready. Test it with sample data or custom inputs.
-                                  </p>
-                                  
-                                  {/* Model Performance Metrics */}
-                                  {(payload as any).metrics && (
-                                    <div className="bg-replit-bg/50 rounded p-3 mb-4">
-                                      <div className="text-xs font-semibold text-replit-textMuted uppercase mb-2">Model Performance:</div>
-                                      <div className="grid grid-cols-2 gap-2">
-                                        {Object.entries((payload as any).metrics).map(([key, value]: [string, any]) => {
-                                          if (key === 'model_name' || key === 'task_type' || key === 'dataset') return null;
-                                          return (
-                                            <div key={key} className="text-sm">
-                                              <span className="text-replit-textMuted capitalize">{key.replace(/_/g, ' ')}:</span>{' '}
-                                              <span className="text-green-400 font-semibold">
-                                                {typeof value === 'number' ? (value < 1 ? (value * 100).toFixed(1) + '%' : value.toFixed(2)) : value}
-                                              </span>
-                                            </div>
-                                          );
-                                        })}
-                                      </div>
-                                    </div>
-                                  )}
-                                  
-                                  {/* Sample Data Section */}
-                                  {loadingSamples ? (
-                                    <div className="flex items-center justify-center py-8">
-                                      <Loader2 className="w-6 h-6 animate-spin text-purple-400" />
-                                      <span className="ml-2 text-sm text-replit-textMuted">Loading sample data...</span>
-                                    </div>
-                                  ) : sampleData.length > 0 ? (
-                                    <div className="space-y-3">
-                                      <div className="text-sm font-semibold text-replit-text">Try with sample data:</div>
-                                      <div className="grid grid-cols-1 gap-2">
-                                        {sampleData.map((sample: any, idx: number) => (
-                                          <button
-                                            key={idx}
-                                            onClick={() => {
-                                              setPredictionInput(sample.features);
-                                              handlePredict(sample.features);
-                                            }}
-                                            className="text-left p-3 rounded border border-replit-border hover:border-purple-500/50 bg-replit-surface hover:bg-replit-surface/80 transition-all"
-                                          >
-                                            <div className="flex items-center justify-between">
-                                              <div className="flex-1">
-                                                <div className="text-xs text-replit-textMuted mb-1">Sample {idx + 1}</div>
-                                                <div className="text-sm text-replit-text font-mono">
-                                                  {Object.entries(sample.features).slice(0, 3).map(([key, val]: [string, any]) => (
-                                                    <span key={key} className="mr-3">
-                                                      {key}: <span className="text-blue-400">{String(val).substring(0, 20)}</span>
-                                                    </span>
-                                                  ))}
-                                                  {Object.keys(sample.features).length > 3 && <span className="text-replit-textMuted">...</span>}
-                                                </div>
-                                                {sample.actual !== null && sample.actual !== undefined && (
-                                                  <div className="text-xs text-green-400 mt-1">
-                                                    Actual: {String(sample.actual)}
-                                                  </div>
-                                                )}
-                                              </div>
-                                              <svg className="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                                              </svg>
-                                            </div>
-                                          </button>
-                                        ))}
-                                      </div>
-                                    </div>
-                                  ) : (
-                                    <div className="text-sm text-replit-textMuted py-4 text-center">
-                                      No sample data available
-                                    </div>
-                                  )}
-                                  
-                                  {/* Prediction Result */}
-                                  {isPredicting && (
-                                    <div className="mt-4 p-4 bg-blue-500/10 border border-blue-500/30 rounded-lg">
-                                      <div className="flex items-center gap-2">
-                                        <Loader2 className="w-5 h-5 animate-spin text-blue-400" />
-                                        <span className="text-sm text-blue-400">Making prediction...</span>
-                                      </div>
-                                    </div>
-                                  )}
-                                  
-                                  {predictionResult && !isPredicting && (
-                                    <div className="mt-4 p-4 bg-gradient-to-br from-green-500/10 to-emerald-500/10 border-2 border-green-500/50 rounded-lg">
-                                      <div className="text-sm font-semibold text-green-400 mb-2">Prediction Result:</div>
-                                      <div className="space-y-2">
-                                        <div className="text-2xl font-bold text-green-400">
-                                          {predictionResult.task_type === 'classification' ? `Class ${predictionResult.prediction}` : predictionResult.prediction}
-                                        </div>
-                                        {predictionResult.confidence && (
-                                          <div className="text-sm">
-                                            <span className="text-replit-textMuted">Confidence:</span>{' '}
-                                            <span className="text-green-400 font-semibold">{(predictionResult.confidence * 100).toFixed(1)}%</span>
-                                          </div>
-                                        )}
-                                        {predictionResult.probabilities && (
-                                          <div className="mt-2 space-y-1">
-                                            <div className="text-xs text-replit-textMuted">Class Probabilities:</div>
-                                            {predictionResult.probabilities.map((prob: number, idx: number) => (
-                                              <div key={idx} className="flex items-center gap-2">
-                                                <span className="text-xs text-replit-text w-16">Class {idx}:</span>
-                                                <div className="flex-1 h-2 bg-replit-surface rounded-full overflow-hidden">
-                                                  <div 
-                                                    className="h-full bg-gradient-to-r from-green-500 to-emerald-500"
-                                                    style={{ width: `${prob * 100}%` }}
-                                                  />
-                                                </div>
-                                                <span className="text-xs text-green-400 w-12">{(prob * 100).toFixed(1)}%</span>
-                                              </div>
-                                            ))}
-                                          </div>
-                                        )}
-                                      </div>
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                          </div>
                         ) : (payload as any)?.export ? (
                           /* Special rendering for EXPORT stage with download button */
                           <div className="mt-3 space-y-3">
@@ -922,6 +727,20 @@ export default function RealBackendLoader({ session, onComplete, updateFileConte
                                           <span className="text-purple-400">🤖</span>
                                           <span className="text-replit-text">{(payload as any).export.files.model}</span>
                                           <span className="text-xs text-replit-textMuted">(Trained model)</span>
+                                        </div>
+                                      )}
+                                      {(payload as any).export.files?.metadata_json && (
+                                        <div className="flex items-center gap-2 text-sm">
+                                          <span className="text-yellow-400">📊</span>
+                                          <span className="text-replit-text">{(payload as any).export.files.metadata_json}</span>
+                                          <span className="text-xs text-replit-textMuted">(Model metadata JSON)</span>
+                                        </div>
+                                      )}
+                                      {(payload as any).export.files?.metadata_pkl && (
+                                        <div className="flex items-center gap-2 text-sm">
+                                          <span className="text-orange-400">🔧</span>
+                                          <span className="text-replit-text">{(payload as any).export.files.metadata_pkl}</span>
+                                          <span className="text-xs text-replit-textMuted">(Model metadata PKL)</span>
                                         </div>
                                       )}
                                     </div>
