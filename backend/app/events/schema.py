@@ -40,13 +40,22 @@ STAGE_SEQUENCE: List[StageID] = [
     StageID.EXPORT,
 ]
 
+# Map 8 backend stages into 5 frontend visualization buckets.
+VIS_STAGE_INDEX = {
+    StageID.PARSE_INTENT: 0,
+    StageID.DATA_SOURCE: 0,
+    StageID.PROFILE_DATA: 1,
+    StageID.PREPROCESS: 1,
+    StageID.MODEL_SELECT: 2,  # dedicated model-select node
+    StageID.TRAIN: 3,
+    StageID.REVIEW_EDIT: 4,
+    StageID.EXPORT: 4,
+}
+
 
 def stage_index(stage_id: StageID) -> int:
-    """Return the stable index for a given stage id."""
-    try:
-        return STAGE_SEQUENCE.index(stage_id)
-    except ValueError:
-        return 0
+    """Return the stable index for a given stage id (mapped to 5-stage visual timeline)."""
+    return VIS_STAGE_INDEX.get(stage_id, 0)
 
 
 # ============================================================================
