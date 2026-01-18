@@ -1318,9 +1318,6 @@ export default function RealBackendLoader({ session, onComplete, updateFileConte
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-xl font-bold text-replit-text">Real Backend Pipeline</h2>
-            <p className="text-sm text-replit-textMuted mt-1">
-              Connected to ws://localhost:8000 • No mock data
-            </p>
           </div>
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
