@@ -2,9 +2,11 @@
 Lightweight image trainer for cats vs dogs demo.
 Uses Keras (TensorFlow) if available; otherwise falls back to synthetic training stream.
 Now also supports a minimal PyTorch path if torch is installed.
+Includes comprehensive evaluation metrics.
 """
 import asyncio
 import uuid
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any
@@ -16,6 +18,9 @@ from app.events.bus import event_bus
 from app.events.schema import EventType, StageID, StageStatus
 from app.api.assets import ASSET_ROOT
 from app.ml.artifacts import save_json_asset, asset_url
+from app.ml.metrics import MetricsCalculator
+
+logger = logging.getLogger(__name__)
 
 try:
     import tensorflow as tf
@@ -96,18 +101,67 @@ class ImageTrainer:
         # If TF not available, simulate
         if tf is None and torch is None:
             await self._stream_synthetic()
-            acc = 0.85
-            cm = [[45, 5], [7, 43]]
-            cm_path = save_json_asset(self.config.project_id, f"artifacts/{self.run_id}_confusion.json", {"confusion": cm})
-            await self._emit(EventType.CONFUSION_MATRIX_READY, {"asset_url": asset_url(cm_path)})
-            await self._emit(EventType.ARTIFACT_ADDED, {"artifact": {"id": f"{self.run_id}_confusion", "type": "confusion_matrix", "name": "Confusion Matrix", "url": asset_url(cm_path), "meta": {}}})
+            
+            # Simulated metrics for demo
+            y_true = [0]*50 + [1]*50
+            y_pred = [0]*45 + [1]*5 + [0]*7 + [1]*43
+            
+            all_metrics = MetricsCalculator.classification_metrics(
+                np.array(y_true), np.array(y_pred)
+            )
+            
+            acc = all_metrics.get("accuracy", 0.85)
+            cm = all_metrics.get("confusion_matrix", [[45, 5], [7, 43]])
+            
+            # Emit comprehensive metrics
+            await self._emit(
+                EventType.CLASSIFICATION_METRICS_READY,
+                {
+                    "run_id": self.run_id,
+                    "accuracy": all_metrics.get("accuracy", 0.0),
+                    "balanced_accuracy": all_metrics.get("balanced_accuracy", 0.0),
+                    "precision": all_metrics.get("precision", 0.0),
+                    "recall": all_metrics.get("recall", 0.0),
+                    "f1": all_metrics.get("f1", 0.0),
+                    "roc_auc": all_metrics.get("roc_auc"),
+                    "mcc": all_metrics.get("mcc", 0.0),
+                    "cohen_kappa": all_metrics.get("cohen_kappa", 0.0),
+                    "n_classes": 2,
+                    "class_labels": ["class_0", "class_1"],
+                    "class_distribution": {"0": 50, "1": 50},
+                },
+            )
+            
+            cm_data = {"confusion": cm, "accuracy": acc, "precision": all_metrics.get("precision"), "recall": all_metrics.get("recall"), "f1": all_metrics.get("f1")}
+            cm_path = save_json_asset(self.config.project_id, f"artifacts/{self.run_id}_confusion.json", cm_data)
+            await self._emit(EventType.CONFUSION_MATRIX_READY, {
+                "run_id": self.run_id,
+                "matrix": cm,
+                "asset_url": asset_url(cm_path),
+            })
+            await self._emit(EventType.ARTIFACT_ADDED, {"artifact": {"id": f"{self.run_id}_confusion", "type": "confusion_matrix", "name": "Confusion Matrix", "url": asset_url(cm_path), "meta": {"accuracy": acc}}})
             await self._emit(
                 EventType.METRIC_SCALAR,
                 {"run_id": self.run_id, "name": "accuracy", "split": "test", "step": self.config.steps, "value": acc},
             )
+            
+            # Evaluation complete
+            await self._emit(
+                EventType.EVALUATION_COMPLETE,
+                {
+                    "run_id": self.run_id,
+                    "task_type": "classification",
+                    "primary_metric": "accuracy",
+                    "primary_value": acc,
+                    "all_metrics": all_metrics,
+                    "artifacts": [{"type": "confusion_matrix", "url": asset_url(cm_path)}],
+                    "shap_available": False,
+                },
+            )
+            
             await self._emit(
                 EventType.TRAIN_RUN_FINISHED,
-                {"run_id": self.run_id, "status": "success", "final_metrics": {"accuracy": acc}},
+                {"run_id": self.run_id, "status": "success", "final_metrics": {"accuracy": acc, "f1": all_metrics.get("f1", 0.0)}},
                 stage_status=StageStatus.COMPLETED,
             )
             return {"metrics": {"accuracy": acc}, "run_id": self.run_id}

@@ -33,23 +33,42 @@ class PromptParserAgent:
     """Parses a user prompt into the Stage 1 `PROMPT_PARSED` schema."""
 
     def __init__(self, *, temperature: float = 0.0, timeout_s: int = 30):
+        import os
         self.temperature = temperature
         self.timeout_s = timeout_s
+        
+        print("[PromptParser] Initializing LLM clients...")
+        
+        # Debug: Check environment variable
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if api_key:
+            print(f"[PromptParser] OPENROUTER_API_KEY found: {api_key[:15]}...{api_key[-10:]} (length: {len(api_key)})")
+        else:
+            print("[PromptParser] ⚠️  OPENROUTER_API_KEY is None or empty!")
+        
+        # Initialize OpenRouter client
         self.client = OpenRouterClient(timeout=timeout_s)
+        print(f"[PromptParser] OpenRouter client available: {self.client.available()}")
+        
+        # Initialize LangChain LLM
         self.llm = get_openrouter_llm(temperature=temperature, timeout=timeout_s)
-        self.parser = JsonOutputParser()
-        format_instructions = "{format_instructions}"
+        print(f"[PromptParser] LangChain LLM available: {self.llm is not None}")
+        
+        if not self.client.available() and not self.llm:
+            print("[PromptParser] ⚠️  WARNING: No LLM available! Check OPENROUTER_API_KEY in .env")
+        
+        self.parser = JsonOutputParser(pydantic_object=PromptParsedPayload)
         self.prompt = ChatPromptTemplate.from_messages(
             [
                 (
                     "system",
                     "You are a strict prompt parser for an AutoML platform. "
-                    "Return ONLY a JSON object matching schema: {task_type, target, dataset_hint, constraints}. "
+                    "Return ONLY a JSON object matching schema: {{task_type, target, dataset_hint, constraints}}. "
                     "Rules: task_type in [classification, regression, clustering, timeseries, nlp, vision, tabular, other]; "
                     "target is a short phrase; dataset_hint is short and useful for dataset search; "
                     "constraints is an object with user-stated constraints; "
                     "if unclear, set constraints.needs_clarification=true and add constraints.questions[]. "
-                    f"Use this JSON format:\n{format_instructions}",
+                    "Use this JSON format:\n{format_instructions}",
                 ),
                 ("user", "{user_prompt}"),
             ]
@@ -57,10 +76,17 @@ class PromptParserAgent:
 
     def parse(self, prompt: str) -> Dict[str, Any]:
         """Parse the user prompt into PROMPT_PARSED payload."""
+        import time
+        start_time = time.time()
+        
+        print(f"\n[PromptParser] Starting parse...")
+        print(f"[PromptParser] Prompt length: {len(prompt)} chars")
+        
         prompt = (prompt or "").strip()
 
         # We still return a contract-valid payload for empty input.
         if not prompt:
+            print("[PromptParser] Empty prompt detected, returning clarification request")
             return PromptParsedPayload(
                 task_type="other",
                 target="",
@@ -76,14 +102,23 @@ class PromptParserAgent:
 
         # Preferred path: LangChain structured output if LLM available.
         try:
+            print(f"[PromptParser] Checking if LangChain LLM is available: {self.llm is not None}")
             if self.llm:
+                print("[PromptParser] Using LangChain LLM...")
                 chain = self.prompt | self.llm | self.parser
+                
+                print("[PromptParser] Invoking LLM chain...")
+                llm_start = time.time()
                 payload_obj = chain.invoke(
                     {
                         "user_prompt": prompt,
                         "format_instructions": self.parser.get_format_instructions(),
                     }
                 )
+                llm_duration = time.time() - llm_start
+                print(f"[PromptParser] ✅ LLM response received in {llm_duration:.2f}s")
+                
+                print("[PromptParser] Validating response...")
                 payload = PromptParsedPayload.model_validate(payload_obj)
                 # Normalize task_type defensively.
                 payload.task_type = (payload.task_type or "other").strip().lower()
@@ -111,15 +146,22 @@ class PromptParserAgent:
                     c["questions"] = qs
                     payload.constraints = c
 
+                total_duration = time.time() - start_time
+                print(f"[PromptParser] ✅ Complete in {total_duration:.2f}s (LangChain)")
                 return payload.model_dump()
 
-        except Exception:
+        except Exception as e:
+            print(f"[PromptParser] ⚠️  LangChain failed: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
             # Fall through to legacy OpenRouter client + heuristics
             pass
 
         # Legacy LLM call (non-LangChain) if available
         try:
+            print(f"[PromptParser] Checking if legacy OpenRouter client is available: {self.client.available()}")
             if self.client.available():
+                print("[PromptParser] Using legacy OpenRouter client...")
                 system = (
                     "You are a strict prompt parsing component for an AutoML platform.\n"
                     "Return ONLY a JSON object matching this schema exactly:\n"
@@ -179,29 +221,9 @@ class PromptParserAgent:
                 },
             ).model_dump()
         except Exception as e:
-            # fallthrough to heuristics below
-            pass
+            # Don't hide errors - let them bubble up so we know the LLM failed
+            print(f"[PromptParser] ❌ Legacy client also failed: {e}")
+            raise RuntimeError(f"PromptParser failed - LLM unavailable or errored: {e}")
 
-        # Heuristic fallback for common intents or errors
-        lower = prompt.lower()
-        if "cat" in lower and "dog" in lower:
-            return PromptParsedPayload(
-                task_type="classification",
-                target="cat vs dog image",
-                dataset_hint="cats and dogs images",
-                constraints={},
-            ).model_dump()
-
-        return PromptParsedPayload(
-            task_type="other",
-            target="",
-            dataset_hint="",
-            constraints={
-                "needs_clarification": True,
-                "questions": [
-                    "Parsing service error. Try again or provide task_type + target explicitly.",
-                    "Ensure OPENROUTER_API_KEY is set and valid (no ellipsis placeholders).",
-                ],
-                "error": "LLM unavailable or parsing failed.",
-            },
-        ).model_dump()
+        # If we get here, both LangChain and legacy client failed
+        raise RuntimeError("PromptParser failed - no LLM available")

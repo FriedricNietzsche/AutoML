@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import TopBar from './TopBar';
 import ResizablePanel from './ResizablePanel';
-import AIBuilderPanel from '../left/AIBuilderPanel';
 import FilesPanel from '../right/FilesPanel';
+import MetricsPanel from '../right/MetricsPanel';
 import WorkspaceTabs, { type Tab } from '../center/WorkspaceTabs';
 import DashboardPane from '../center/DashboardPane';
 import PreviewPane from '../center/PreviewPane';
@@ -20,7 +20,7 @@ import { usePipelineRunner } from '../../lib/usePipelineRunner';
 import { useRouter } from '../../router/router';
 import type { BuildSession, ChatMessage } from '../../lib/buildSession';
 import { useTheme } from '../../lib/theme';
-import { FolderOpen, PanelLeftOpen, PanelRightOpen } from 'lucide-react';
+import { FolderOpen, PanelRightOpen, FolderTree, BarChart3 } from 'lucide-react';
 import { useProjectStore } from '../../store/projectStore';
 import ThemedBackground from '../ThemedBackground';
 
@@ -125,12 +125,12 @@ export default function AppShell() {
   const [session, setSession] = useLocalStorageState<BuildSession | null>('autoai.buildSession.current', null);
 
   // Panel state
-  const [leftCollapsed, setLeftCollapsed] = useLocalStorageState('leftPanelCollapsed', false);
   const [rightCollapsed, setRightCollapsed] = useLocalStorageState('rightPanelCollapsed', false);
+  const [rightPanelTab, setRightPanelTab] = useLocalStorageState<'files' | 'metrics'>('rightPanelTab', 'files');
   
   // Resizable panels
   const { sizes, handlePointerDown, containerRef } = useResizablePanels({
-    left: 360,
+    left: 0,
     right: 300,
   });
 
@@ -145,17 +145,25 @@ export default function AppShell() {
     undefined;
   const apiBase = useMemo(() => resolveHttpBase(wsBase), [wsBase]);
 
-  const { connectionStatus, lastEvent, connect: connectProject, hydrate } = useProjectStore((state) => ({
+  const { connectionStatus, lastEvent, currentStageId, stages, waitingConfirmation, confirm, connect: connectProject, hydrate } = useProjectStore((state) => ({
     connectionStatus: state.connectionStatus,
     lastEvent: state.lastEvent,
+    currentStageId: state.currentStageId,
+    stages: state.stages,
+    waitingConfirmation: state.waitingConfirmation,
+    confirm: state.confirm,
     connect: state.connect,
     hydrate: state.hydrate,
   }));
 
+  // Connect to WebSocket ONCE on mount
+  // DO NOT add connect/hydrate to dependencies - they change on every render
+  // Only reconnect if projectId or wsBase changes
   useEffect(() => {
     connectProject({ projectId, wsBase });
     hydrate();
-  }, [connectProject, hydrate, projectId, wsBase]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, wsBase]);
 
   // (VFS helpers are hoisted outside the component to keep updateFileContent stable)
   
@@ -466,7 +474,6 @@ export default function AppShell() {
   useKeyboardShortcuts({
     'ctrl+`': () => setActiveTabId('console'),
     'ctrl+p': () => setQuickSwitcherOpen(true),
-    'ctrl+b': () => setLeftCollapsed(!leftCollapsed),
     'ctrl+e': () => setRightCollapsed(!rightCollapsed),
   });
 
@@ -478,7 +485,8 @@ export default function AppShell() {
     switch (activeTab.type) {
       case 'preview':
         return <PreviewPane 
-            files={files} 
+            files={files}
+            session={session}
             isRunning={isRunning} 
             onSimulationComplete={() => {
               completePipeline();
@@ -543,8 +551,6 @@ export default function AppShell() {
 
       <TopBar
         isBuildReady={isBuildReady}
-        isPipelineRunning={isRunning}
-        onRun={handleRunPipeline}
         onGenerateData={handleGenerateData}
         onExportModel={handleExportModel}
         isDark={isDark}
@@ -552,41 +558,13 @@ export default function AppShell() {
         connectionStatus={connectionStatus}
         onPingBackend={pingBackend}
         isPinging={pinging}
+        currentStage={currentStageId}
+        stages={stages}
+        waitingConfirmation={waitingConfirmation}
+        onConfirm={confirm}
       />
 
       <div ref={containerRef} className="flex-1 flex overflow-hidden">
-        {/* Left Panel - AI Builder */}
-        <ResizablePanel
-          width={sizes.left}
-          side="left"
-          isCollapsed={leftCollapsed}
-          onResize={handlePointerDown}
-          collapsedContent={
-            <>
-              <button
-                onClick={() => setLeftCollapsed(false)}
-                className="p-2 rounded-lg hover:bg-replit-surfaceHover/40 text-replit-textMuted"
-                aria-label="Expand input panel"
-                title="Expand (Ctrl+B)"
-              >
-                <PanelLeftOpen className="w-4 h-4" />
-              </button>
-              <div className="h-px w-8 bg-replit-border/60" />
-              <div className="text-[10px] text-replit-textMuted rotate-90 whitespace-nowrap mt-6">Input</div>
-            </>
-          }
-        >
-          {session && (
-            <AIBuilderPanel
-              session={session}
-              onCollapse={() => setLeftCollapsed(true)}
-              onEditSession={() => navigate('/')}
-              onUpdateSession={patchSession}
-              onSendMessage={handleSendChangeRequest}
-            />
-          )}
-        </ResizablePanel>
-
         {/* Center Workspace */}
         <div className="flex-1 flex flex-col min-w-0">
           <WorkspaceTabs
@@ -601,7 +579,7 @@ export default function AppShell() {
           </div>
         </div>
 
-        {/* Right Panel - Files */}
+        {/* Right Panel - Files & Metrics */}
         <ResizablePanel
           width={sizes.right}
           side="right"
@@ -612,7 +590,7 @@ export default function AppShell() {
               <button
                 onClick={() => setRightCollapsed(false)}
                 className="p-2 rounded-lg hover:bg-replit-surfaceHover/40 text-replit-textMuted"
-                aria-label="Expand file explorer"
+                aria-label="Expand panel"
                 title="Expand (Ctrl+E)"
               >
                 <PanelRightOpen className="w-4 h-4" />
@@ -621,21 +599,72 @@ export default function AppShell() {
               <button
                 onClick={() => {
                   setRightCollapsed(false);
-                  setActiveTabId('dashboard');
+                  setRightPanelTab('files');
                 }}
                 className="p-2 rounded-lg hover:bg-replit-surfaceHover/40 text-replit-textMuted"
-                aria-label="Open Dashboard"
-                title="Dashboard"
+                aria-label="Open Files"
+                title="Files"
               >
-                <FolderOpen className="w-4 h-4" />
+                <FolderTree className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => {
+                  setRightCollapsed(false);
+                  setRightPanelTab('metrics');
+                }}
+                className="p-2 rounded-lg hover:bg-replit-surfaceHover/40 text-replit-textMuted"
+                aria-label="Open Metrics"
+                title="Metrics"
+              >
+                <BarChart3 className="w-4 h-4" />
               </button>
             </>
           }
         >
-          {/* We need to update FilesPanel to accept the new VFS structure if it differs,
-              but for now passing handleFileSelect is key. 
-              Ideally we pass 'files' prop to FilesPanel so it renders our live state instead of its internal mock */}
-          <FilesPanel onFileSelect={handleFileSelect} files={files} onCollapse={() => setRightCollapsed(true)} />
+          {/* Tabbed Panel Header */}
+          <div className="flex flex-col h-full">
+            <div className="h-10 bg-replit-surface/60 backdrop-blur border-b border-replit-border/70 flex items-center shrink-0">
+              <button
+                onClick={() => setRightPanelTab('files')}
+                className={`flex-1 h-full px-4 text-sm font-medium flex items-center justify-center gap-2 transition-colors border-b-2 ${
+                  rightPanelTab === 'files'
+                    ? 'text-replit-text border-replit-accent bg-replit-surface/30'
+                    : 'text-replit-textMuted border-transparent hover:text-replit-text hover:bg-replit-surfaceHover/30'
+                }`}
+              >
+                <FolderTree className="w-4 h-4" />
+                Files
+              </button>
+              <button
+                onClick={() => setRightPanelTab('metrics')}
+                className={`flex-1 h-full px-4 text-sm font-medium flex items-center justify-center gap-2 transition-colors border-b-2 ${
+                  rightPanelTab === 'metrics'
+                    ? 'text-replit-text border-replit-accent bg-replit-surface/30'
+                    : 'text-replit-textMuted border-transparent hover:text-replit-text hover:bg-replit-surfaceHover/30'
+                }`}
+              >
+                <BarChart3 className="w-4 h-4" />
+                Metrics
+              </button>
+              <button
+                onClick={() => setRightCollapsed(true)}
+                className="px-3 h-full text-replit-textMuted hover:text-replit-text hover:bg-replit-surfaceHover/30 transition-colors"
+                aria-label="Collapse panel"
+              >
+                <PanelRightOpen className="w-4 h-4" />
+              </button>
+            </div>
+            
+            {/* Panel Content */}
+            <div className="flex-1 overflow-hidden">
+              {rightPanelTab === 'files' && (
+                <FilesPanel onFileSelect={handleFileSelect} files={files} />
+              )}
+              {rightPanelTab === 'metrics' && (
+                <MetricsPanel />
+              )}
+            </div>
+          </div>
         </ResizablePanel>
       </div>
 

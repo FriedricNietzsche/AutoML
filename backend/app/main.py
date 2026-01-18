@@ -1,9 +1,16 @@
 """
 AutoML Agentic Builder - Backend API
 """
+from pathlib import Path
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
+
+# Load environment variables from .env file
+env_path = Path(__file__).parent.parent / ".env"
+load_dotenv(env_path, override=True)
+print(f"[Startup] Loaded environment from: {env_path}")
 
 # Configure logging
 logging.basicConfig(
@@ -69,10 +76,66 @@ async def health_check():
 
 @app.get("/")
 async def root():
-    """Root endpoint."""
+    """Root endpoint with API overview."""
     return {
         "message": "AutoML Agentic Builder API",
-        "docs": "/docs",
-        "health": "/health",
-        "websocket": "/ws/projects/{project_id}"
+        "version": "0.1.0",
+        "endpoints": {
+            "docs": "/docs",
+            "redoc": "/redoc",
+            "health": "/health",
+            "websocket": "/ws/projects/{project_id}"
+        },
+        "websocket_info": {
+            "url": "ws://localhost:8000/ws/projects/{project_id}",
+            "protocol": "WebSocket",
+            "description": "Real-time bidirectional communication for ML pipeline events and commands",
+            "documentation": "See /ws/docs for WebSocket API details"
+        }
+    }
+
+
+@app.get("/ws/docs")
+async def websocket_docs():
+    """WebSocket API documentation (since WebSockets don't appear in OpenAPI/Swagger)."""
+    return {
+        "title": "WebSocket API Documentation",
+        "endpoint": "/ws/projects/{project_id}",
+        "description": "Real-time bidirectional communication for ML pipeline",
+        "connection": {
+            "url": "ws://localhost:8000/ws/projects/{project_id}",
+            "example": "ws://localhost:8000/ws/projects/demo-project"
+        },
+        "server_to_client_events": [
+            "HELLO - Initial connection acknowledgment",
+            "STAGE_STATUS - Stage progression updates",
+            "TRAIN_PROGRESS - Training progress updates",
+            "METRIC_SCALAR - Training metrics (loss, accuracy)",
+            "LOG_LINE - Log messages",
+            "EXPORT_READY - Export bundle ready",
+            "And 30+ other event types..."
+        ],
+        "client_to_server_messages": {
+            "chat": {
+                "description": "Send user chat messages or change requests",
+                "example": {"type": "chat", "text": "Please optimize for accuracy"}
+            },
+            "confirm": {
+                "description": "Confirm current stage and advance pipeline",
+                "example": {"type": "confirm"}
+            },
+            "command": {
+                "description": "Execute specific commands",
+                "example": {
+                    "type": "command",
+                    "command": "restart_stage",
+                    "args": {"stage_id": "TRAIN"}
+                }
+            },
+            "ping": {
+                "description": "Keepalive ping",
+                "example": {"type": "ping", "ts": 1705532400000}
+            }
+        },
+        "full_documentation": "/docs/WEBSOCKET_MESSAGES.md in repository"
     }

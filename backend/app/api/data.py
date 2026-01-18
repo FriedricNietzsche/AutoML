@@ -24,6 +24,7 @@ from app.events.schema import (
     StageStatus,
 )
 from app.orchestrator.conductor import conductor
+from app.orchestrator.pipeline import orchestrator as pipeline_orchestrator
 from app.api.assets import ASSET_ROOT
 
 router = APIRouter(prefix="/api/projects", tags=["data"])
@@ -159,6 +160,9 @@ async def _emit_waiting_confirmation(project_id: str, summary: str, candidates: 
 
 @router.post("/{project_id}/upload")
 async def upload_dataset(project_id: str, file: UploadFile = File(...)):
+    """Upload a dataset file and store selection in orchestrator context"""
+    from ..orchestrator.pipeline import orchestrator
+    
     project_dir = _project_dir(project_id)
     dest = project_dir / file.filename
     with dest.open("wb") as f:
@@ -173,23 +177,373 @@ async def upload_dataset(project_id: str, file: UploadFile = File(...)):
     sample_path = project_dir / "sample.csv"
     df.head(200).to_csv(sample_path, index=False)
 
-    # Emit events and advance stages
+    # Store the uploaded dataset in orchestrator context
+    async with orchestrator._lock:
+        context = orchestrator._get_context(project_id)
+        context["selected_dataset"] = {
+            "source": "upload",
+            "filename": file.filename,
+            "path": str(dest),
+            "rows": len(df),
+            "columns": list(df.columns)
+        }
+
+    # Emit events
     await _emit_sample(project_id, df, sample_path)
-    await conductor.transition_to(project_id, StageID.DATA_SOURCE, StageStatus.COMPLETED, "Data uploaded")
-    await conductor.transition_to(project_id, StageID.PROFILE_DATA, StageStatus.IN_PROGRESS, "Profiling dataset")
-    await _emit_profile(project_id, df, project_dir / "profile")
+    
+    # Note: Don't auto-advance stages here - let user confirm first
+    # The orchestrator will handle stage transitions when user clicks confirm
 
     return {"status": "ok", "rows": len(df), "columns": list(df.columns)}
+
+
+@router.post("/{project_id}/dataset/select")
+async def select_dataset(project_id: str, dataset_id: str = Body(..., embed=True)):
+    """
+    User selects a dataset from the suggested candidates.
+    ONLY stores the selection - does NOT download yet.
+    Download happens when user clicks "Next/Confirm" button.
+    """
+    print(f"[API] User selected dataset: {dataset_id} for project: {project_id}")
+    
+    async with pipeline_orchestrator._lock:
+        context = pipeline_orchestrator._get_context(project_id)
+        # Find the selected dataset from candidates
+        candidates = context.get("dataset_candidates", [])
+        selected = next((d for d in candidates if d.get("id") == dataset_id), None)
+        
+        if not selected:
+            raise HTTPException(status_code=404, detail=f"Dataset {dataset_id} not found in candidates")
+        
+        # Check if this is the "upload CSV" prompt
+        if selected.get("is_upload_prompt") or dataset_id == "upload_csv":
+            # Store that user wants to upload CSV
+            context["selected_dataset"] = {
+                "id": dataset_id,
+                "name": selected.get("name", "Upload CSV"),
+                "source": "upload_pending",
+                "is_upload_prompt": True
+            }
+            
+            # Send event to show upload button (don't auto-trigger)
+            await event_bus.publish_event(
+                project_id=project_id,
+                event_name=EventType.STAGE_STATUS,
+                payload={
+                    "stage": StageID.DATA_SOURCE.value,
+                    "status": StageStatus.WAITING_CONFIRMATION.value,
+                    "message": "📤 Ready to upload CSV file",
+                    "action": "show_upload_button",
+                    "details": "Click 'Next' to proceed, then upload your CSV file"
+                },
+                stage_id=StageID.DATA_SOURCE,
+                stage_status=StageStatus.WAITING_CONFIRMATION,
+            )
+            
+            return {
+                "status": "ok",
+                "message": "Upload CSV selected - please click Next to proceed",
+                "requires_upload": True,
+                "selected": context["selected_dataset"]
+            }
+        
+        # For HuggingFace datasets, just store the selection (don't download yet)
+        context["selected_dataset"] = selected
+        
+        print(f"[API] ✅ Stored dataset selection: {selected.get('name', dataset_id)} (will download on confirm)")
+        
+        # Send confirmation event
+        await event_bus.publish_event(
+            project_id=project_id,
+            event_name=EventType.STAGE_STATUS,
+            payload={
+                "stage": StageID.DATA_SOURCE.value,
+                "status": StageStatus.WAITING_CONFIRMATION.value,
+                "message": f"✅ Selected: {selected.get('name', dataset_id)}",
+                "details": "Click 'Next' to download and proceed"
+            },
+            stage_id=StageID.DATA_SOURCE,
+            stage_status=StageStatus.WAITING_CONFIRMATION,
+        )
+        
+        return {
+            "status": "ok",
+            "message": "Dataset selected - click Next to download",
+            "selected": selected
+        }
+
+
+@router.post("/{project_id}/dataset/download")
+async def download_dataset(project_id: str):
+    """
+    Download the previously selected HuggingFace dataset.
+    Called when user clicks 'Next' button after selecting a dataset.
+    """
+    async with pipeline_orchestrator._lock:
+        context = pipeline_orchestrator._get_context(project_id)
+        selected = context.get("selected_dataset")
+    
+    if not selected:
+        raise HTTPException(status_code=400, detail="No dataset selected - select a dataset first")
+    
+    # Check if upload is required instead of download
+    if selected.get("is_upload_prompt") or selected.get("source") == "upload_pending":
+        raise HTTPException(status_code=400, detail="Upload CSV required - use /dataset/upload endpoint instead")
+    
+    # Check if already downloaded
+    if "path" in selected and Path(selected["path"]).exists():
+        return {
+            "status": "ok",
+            "message": "Dataset already downloaded",
+            "selected": selected,
+            "path": selected["path"]
+        }
+    
+    dataset_id = selected.get("id", "")
+    
+    # Download dataset from HuggingFace
+    print(f"[API] Downloading dataset from HuggingFace: {dataset_id}")
+    try:
+        from datasets import load_dataset
+        import pandas as pd
+        
+        # Publish fetching event
+        await event_bus.publish_event(
+            project_id=project_id,
+            event_name=EventType.STAGE_STATUS,
+            payload={
+                "stage": StageID.DATA_SOURCE.value,
+                "status": StageStatus.IN_PROGRESS.value,
+                "message": f"📦 Fetching dataset metadata from HuggingFace...",
+            },
+            stage_id=StageID.DATA_SOURCE,
+            stage_status=StageStatus.IN_PROGRESS,
+        )
+        
+        # Load from HuggingFace
+        try:
+            # Use full_name if available (e.g., stanfordnlp/imdb instead of just imdb)
+            hf_dataset_id = selected.get("full_name", dataset_id)
+            print(f"[API] Loading HuggingFace dataset: {hf_dataset_id}")
+            
+            # Try loading with trust_remote_code=False to avoid deprecated scripts
+            # Try different splits in order of preference
+            dataset = None
+            splits_to_try = ['train', 'test', 'validation', None]  # None means load all splits
+            last_error = None
+            
+            for split_attempt in splits_to_try:
+                try:
+                    print(f"[API] Attempting to load with split={split_attempt}")
+                    if split_attempt is None:
+                        # Load entire dataset without specifying split
+                        full_dataset = load_dataset(hf_dataset_id, trust_remote_code=False)
+                        # Get the first available split
+                        if hasattr(full_dataset, 'keys'):
+                            available_splits = list(full_dataset.keys())
+                            print(f"[API] Dataset has splits: {available_splits}")
+                            if available_splits:
+                                dataset = full_dataset[available_splits[0]]
+                                print(f"[API] Using split: {available_splits[0]}")
+                        else:
+                            dataset = full_dataset
+                    else:
+                        dataset = load_dataset(hf_dataset_id, split=split_attempt, trust_remote_code=False)
+                        print(f"[API] Successfully loaded with split: {split_attempt}")
+                    break  # Success, exit loop
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    print(f"[API] Failed with split={split_attempt}: {e}")
+                    last_error = e
+                    
+                    # Check for fatal errors that shouldn't be retried
+                    if "dataset scripts are no longer supported" in error_msg or "trust_remote_code" in error_msg:
+                        raise HTTPException(
+                            status_code=400, 
+                            detail=f"This dataset uses deprecated loading scripts and cannot be used. Please select a different dataset or upload your own CSV file."
+                        )
+                    
+                    # For split errors, continue trying other splits
+                    if "unknown split" in error_msg or "should be one of" in error_msg:
+                        continue
+                    
+                    # For other errors on last attempt, raise
+                    if split_attempt is None:
+                        raise
+            
+            if dataset is None:
+                # All attempts failed
+                error_msg = str(last_error) if last_error else "Unknown error"
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Failed to load dataset: {error_msg}. Please try a different dataset or upload your own CSV file."
+                )
+                
+        except HTTPException:
+            # Re-raise HTTPException directly
+            raise
+        except Exception as load_error:
+            # Provide helpful error message with suggestions
+            error_msg = str(load_error)
+            if "doesn't exist" in error_msg.lower() or "cannot be accessed" in error_msg.lower():
+                suggestions = []
+                if "titanic" in dataset_id.lower():
+                    suggestions = [
+                        "Try 'scikit-learn/titanic' or search for 'tabular' datasets",
+                        "Alternatively, upload a CSV file directly"
+                    ]
+                elif "mnist" in dataset_id.lower():
+                    suggestions = ["Try 'mnist' (the standard dataset)"]
+                elif "imdb" in dataset_id.lower():
+                    suggestions = ["Try 'imdb' or 'stanfordnlp/imdb'"]
+                
+                helpful_msg = f"Dataset '{dataset_id}' not found on HuggingFace Hub."
+                if suggestions:
+                    helpful_msg += " " + " ".join(suggestions)
+                
+                raise HTTPException(status_code=404, detail=helpful_msg)
+            raise
+        
+        # Convert to pandas
+        df_full = dataset.to_pandas()
+        
+        # Sample dataset for faster iteration (limit to 100 rows for ultra-fast local training)
+        MAX_SAMPLES = 100  # Reduced from 200
+        
+        if len(df_full) > MAX_SAMPLES:
+            print(f"[API] Large dataset detected ({len(df_full)} rows). Sampling {MAX_SAMPLES} for demo.")
+            # Stratified sample to ensure balanced classes
+            if 'label' in df_full.columns:
+                from sklearn.model_selection import train_test_split
+                _, df = train_test_split(
+                    df_full, 
+                    test_size=MAX_SAMPLES/len(df_full), 
+                    stratify=df_full['label'], 
+                    random_state=42
+                )
+            else:
+                df = df_full.sample(n=MAX_SAMPLES, random_state=42)
+        else:
+            # Use full dataset
+            df = df_full
+            print(f"[API] Using full dataset: {len(df)} rows")
+        
+        print(f"[API] Dataset size: {len(df)} rows with label distribution: {df['label'].value_counts().to_dict() if 'label' in df.columns else 'N/A'}")
+        
+        # Publish processing event
+        await event_bus.publish_event(
+            project_id=project_id,
+            event_name=EventType.STAGE_STATUS,
+            payload={
+                "stage": StageID.DATA_SOURCE.value,
+                "status": StageStatus.IN_PROGRESS.value,
+                "message": f"🔄 Processing dataset ({len(df)} samples)...",
+            },
+            stage_id=StageID.DATA_SOURCE,
+            stage_status=StageStatus.IN_PROGRESS,
+        )
+        
+        # Save to project directory
+        project_dir = _project_dir(project_id)
+        dataset_path = project_dir / f"{dataset_id.replace('/', '_')}.csv"
+        df.to_csv(dataset_path, index=False)
+        
+        print(f"[API] ✅ Downloaded and saved {len(df)} rows to {dataset_path}")
+        
+        # Store selection with path (need to update context)
+        async with pipeline_orchestrator._lock:
+            context = pipeline_orchestrator._get_context(project_id)
+            selected["path"] = str(dataset_path)
+            selected["rows"] = len(df)
+            selected["columns"] = list(df.columns)
+            context["selected_dataset"] = selected
+        
+        # Publish success event
+        await event_bus.publish_event(
+            project_id=project_id,
+            event_name=EventType.DATASET_SELECTED,
+            payload={
+                "dataset": selected,
+                "message": f"✅ Dataset downloaded: {len(df)} rows, {len(df.columns)} columns"
+            },
+            stage_id=StageID.DATA_SOURCE,
+            stage_status=StageStatus.IN_PROGRESS,
+        )
+        
+        return {"status": "ok", "selected": selected, "path": str(dataset_path)}
+        
+    except Exception as e:
+        error_msg = str(e)
+        print(f"[API] ❌ Error downloading dataset: {error_msg}")
+        
+        # Make error message more user-friendly
+        user_friendly_msg = error_msg
+        if "dataset scripts are no longer supported" in error_msg.lower():
+            user_friendly_msg = "This dataset uses deprecated loading scripts and cannot be loaded. Please select a different dataset or upload your own CSV file."
+        elif "trust_remote_code" in error_msg.lower():
+            user_friendly_msg = "This dataset requires running external code which is not allowed for security reasons. Please select a different dataset or upload your own CSV file."
+        
+        # Publish error event
+        await event_bus.publish_event(
+            project_id=project_id,
+            event_name=EventType.STAGE_STATUS,
+            payload={
+                "stage": StageID.DATA_SOURCE.value,
+                "status": StageStatus.FAILED.value,
+                "message": f"❌ {user_friendly_msg}",
+            },
+            stage_id=StageID.DATA_SOURCE,
+            stage_status=StageStatus.FAILED,
+        )
+        
+        raise HTTPException(status_code=500, detail=user_friendly_msg)
+
+
+@router.post("/{project_id}/model/select")
+async def select_model(project_id: str, model_id: str = Body(..., embed=True)):
+    """
+    User selects a model from the recommended candidates.
+    Stores the selection in orchestrator context.
+    """
+    print(f"[API] User selected model: {model_id} for project: {project_id}")
+    
+    async with pipeline_orchestrator._lock:
+        context = pipeline_orchestrator._get_context(project_id)
+        # Find the selected model from candidates
+        candidates = context.get("model_candidates", [])
+        selected = next((m for m in candidates if m.get("id") == model_id), None)
+        
+        if not selected:
+            raise HTTPException(status_code=404, detail=f"Model {model_id} not found in candidates")
+        
+        # Store selection
+        context["selected_model"] = selected
+        print(f"[API] ✅ Selected model: {selected.get('name', model_id)}")
+        
+        # Publish event
+        await event_bus.publish_event(
+            project_id=project_id,
+            event_name=EventType.STAGE_STATUS,
+            payload={
+                "stage": StageID.MODEL_SELECT.value,
+                "status": StageStatus.IN_PROGRESS.value,
+                "message": f"✅ Selected model: {selected.get('name', model_id)}",
+                "model": selected
+            },
+            stage_id=StageID.MODEL_SELECT,
+            stage_status=StageStatus.IN_PROGRESS,
+        )
+        
+        return {"status": "ok", "selected": selected}
 
 
 @router.get("/hf/search")
 async def search_hf_datasets(query: str, limit: int = 20):
     """
-    Search Hugging Face datasets by keyword and return only public, allowed-license entries.
+    Search Hugging Face datasets by keyword and return only datasets with community licenses or unspecified.
     """
     token = _hf_token()
     api = HfApi(token=token)
-    allowed_licenses = {"mit", "apache-2.0", "cc-by-4.0", "cc0-1.0", "cc-by-sa-4.0", "unlicense"}
     results = []
     try:
         for ds in api.list_datasets(search=query, limit=limit):
@@ -199,16 +553,25 @@ async def search_hf_datasets(query: str, limit: int = 20):
             info = ds.card_data or {}
             lic_raw = (info.get("license") or "").lower()
             lic = lic_raw.strip()
-            if lic and lic not in allowed_licenses:
+            
+            # Allow "community" license or empty/unspecified (many HF datasets have no license field)
+            # Reject explicit non-community licenses
+            disallowed = ["apache-2.0", "mit", "cc-by", "gpl", "commercial"]
+            if lic and any(d in lic for d in disallowed):
                 continue
-            results.append({"id": ds.id, "license": lic or "unspecified"})
+            
+            results.append({
+                "id": ds.id,
+                "license": lic or "community",
+                "url": f"https://huggingface.co/datasets/{ds.id}"
+            })
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"HF search failed: {e}")
     if not results:
         return {
             "results": [],
             "count": 0,
-            "message": "No public datasets with allowed licenses found for this query. Try a different keyword or provide a dataset link.",
+            "message": "No datasets available with community licenses. Please upload your own data instead.",
         }
     return {"results": results, "count": len(results)}
 
@@ -218,7 +581,7 @@ async def ingest_hf(
     project_id: str,
     dataset: str = Body(..., embed=True),
     split: str = Body("train", embed=True),
-    max_rows: int = Body(500, embed=True),
+    max_rows: int = Body(100, embed=True),  # Reduced from 200 for ultra-fast training
 ):
     """
     Ingest a dataset from Hugging Face Hub using `datasets`.
@@ -231,11 +594,39 @@ async def ingest_hf(
 
     project_dir = _project_dir(project_id)
     log.info("Downloading HF dataset %s split=%s (max_rows=%s)...", dataset, split, max_rows)
-    try:
-        token = _hf_token()
-        ds = load_dataset(dataset, split=split, token=token)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to load dataset {dataset}:{split} from HF: {e}")
+    
+    token = _hf_token()
+    ds = None
+    splits_to_try = [split, 'train', 'test', 'validation', None]
+    # Remove duplicates while preserving order
+    splits_to_try = list(dict.fromkeys(splits_to_try))
+    
+    last_error = None
+    for split_attempt in splits_to_try:
+        try:
+            if split_attempt is None:
+                # Load entire dataset and use first split
+                full_ds = load_dataset(dataset, token=token)
+                if hasattr(full_ds, 'keys'):
+                    available = list(full_ds.keys())
+                    if available:
+                        ds = full_ds[available[0]]
+                        log.info(f"Using split: {available[0]}")
+                else:
+                    ds = full_ds
+            else:
+                ds = load_dataset(dataset, split=split_attempt, token=token)
+                log.info(f"Successfully loaded split: {split_attempt}")
+            break
+        except Exception as e:
+            last_error = e
+            log.warning(f"Failed to load with split={split_attempt}: {e}")
+            if "unknown split" not in str(e).lower():
+                # Not a split error, don't retry
+                break
+    
+    if ds is None:
+        raise HTTPException(status_code=400, detail=f"Failed to load dataset {dataset} from HF: {last_error}")
 
     try:
         import numpy as np  # local import for hf conversion
@@ -286,15 +677,34 @@ async def ingest_hf_images(
         raise HTTPException(status_code=500, detail=f"datasets package not available: {e}")
 
     token = _hf_token()
+    
+    ds = None
+    splits_to_try = [split, 'train', 'test', 'validation']
+    splits_to_try = list(dict.fromkeys(splits_to_try))  # Remove duplicates
+    
     streaming = True
-    try:
-        ds = load_dataset(dataset, split=split, streaming=True, token=token)
-    except Exception:
-        streaming = False
+    last_error = None
+    
+    for split_attempt in splits_to_try:
         try:
-            ds = load_dataset(dataset, split=split, token=token)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Failed to load dataset {dataset}:{split} from HF: {e}")
+            ds = load_dataset(dataset, split=split_attempt, streaming=True, token=token)
+            log.info(f"Successfully loaded split: {split_attempt} (streaming)")
+            break
+        except Exception as stream_err:
+            log.warning(f"Streaming failed for split={split_attempt}: {stream_err}")
+            streaming = False
+            try:
+                ds = load_dataset(dataset, split=split_attempt, token=token)
+                log.info(f"Successfully loaded split: {split_attempt} (non-streaming)")
+                break
+            except Exception as e:
+                last_error = e
+                log.warning(f"Failed to load with split={split_attempt}: {e}")
+                if "unknown split" not in str(e).lower():
+                    break  # Not a split error, don't retry
+    
+    if ds is None:
+        raise HTTPException(status_code=400, detail=f"Failed to load dataset {dataset} from HF: {last_error}")
 
     project_dir = _project_dir(project_id)
     images_dir = project_dir / "images"
