@@ -8,8 +8,22 @@ import {
   type StageStatus,
   type StageStatusPayload,
   type WaitingConfirmationPayload,
+  type ClassificationMetricsPayload,
+  type RegressionMetricsPayload,
+  type ROCCurveDataPayload,
+  type PrecisionRecallCurvePayload,
+  type ConfusionMatrixDataPayload,
+  type FeatureImportanceDataPayload,
+  type SHAPExplanationsPayload,
+  type EvaluationCompletePayload,
+  type EvaluationStartedPayload,
+  type MetricScalarPayload,
+  type TrainProgressPayload,
+  type LogLinePayload,
 } from '../lib/contract';
 import { createWebSocketClient, type ConnectionStatus, type EventEnvelope, type WSClient } from '../lib/ws';
+import { useMetricsStore } from './metricsStore';
+import { useTrainingStore } from './trainingStore';
 
 type StageState = {
   id: StageID;
@@ -195,7 +209,7 @@ export const useProjectStore = create<ProjectStoreState>((set, get) => ({
 
   applyEvent: (evt: EventEnvelope) => {
     const name = evt.event?.name as EventType | undefined;
-    const payload = evt.event?.payload as StageStatusPayload | WaitingConfirmationPayload | undefined;
+    const payload = evt.event?.payload as any;
 
     if (name === 'STAGE_STATUS' && payload && isStageId((payload as StageStatusPayload).stage_id)) {
       const stagePayload = payload as StageStatusPayload;
@@ -224,6 +238,84 @@ export const useProjectStore = create<ProjectStoreState>((set, get) => ({
     if (name === 'WAITING_CONFIRMATION' && payload) {
       const waitPayload = payload as WaitingConfirmationPayload;
       set({ waitingConfirmation: waitPayload });
+    }
+
+    // Handle metrics events - route to metrics store
+    const metricsStore = useMetricsStore.getState();
+    const trainingStore = useTrainingStore.getState();
+    
+    // Training progress events - route to training store
+    if (name === 'TRAIN_RUN_STARTED' && payload) {
+      const startPayload = payload as { run_id: string };
+      trainingStore.startTraining(startPayload.run_id);
+    }
+    
+    if (name === 'TRAIN_PROGRESS' && payload) {
+      trainingStore.updateProgress(payload as TrainProgressPayload);
+    }
+    
+    if (name === 'METRIC_SCALAR' && payload) {
+      // Route to both stores - training store for live curve, metrics store for history
+      trainingStore.addMetricPoint(payload as MetricScalarPayload);
+      metricsStore.addMetricScalar(payload as MetricScalarPayload);
+    }
+    
+    if (name === 'LOG_LINE' && payload) {
+      const logPayload = payload as LogLinePayload;
+      trainingStore.addLog(logPayload.level, logPayload.text);
+    }
+    
+    if (name === 'TRAIN_RUN_FINISHED' && payload) {
+      const finishPayload = payload as { status: string };
+      if (finishPayload.status === 'success') {
+        trainingStore.completeTraining();
+      } else {
+        trainingStore.failTraining(finishPayload.status);
+      }
+    }
+    
+    if (name === 'EVALUATION_STARTED' && payload) {
+      const evalPayload = payload as EvaluationStartedPayload;
+      metricsStore.setRunId(evalPayload.run_id);
+      metricsStore.setTaskType(evalPayload.task_type);
+      metricsStore.setEvaluating(true);
+      trainingStore.setStatus('evaluating');
+    }
+    
+    if (name === 'CLASSIFICATION_METRICS_READY' && payload) {
+      metricsStore.updateClassificationMetrics(payload as ClassificationMetricsPayload);
+    }
+    
+    if (name === 'REGRESSION_METRICS_READY' && payload) {
+      metricsStore.updateRegressionMetrics(payload as RegressionMetricsPayload);
+    }
+    
+    if (name === 'ROC_CURVE_READY' && payload) {
+      metricsStore.updateROCCurve(payload as ROCCurveDataPayload);
+    }
+    
+    if (name === 'PRECISION_RECALL_CURVE_READY' && payload) {
+      metricsStore.updatePRCurve(payload as PrecisionRecallCurvePayload);
+    }
+    
+    if (name === 'CONFUSION_MATRIX_READY' && payload) {
+      metricsStore.updateConfusionMatrix(payload as ConfusionMatrixDataPayload);
+    }
+    
+    if (name === 'FEATURE_IMPORTANCE_READY' && payload) {
+      metricsStore.updateFeatureImportance(payload as FeatureImportanceDataPayload);
+    }
+    
+    if (name === 'SHAP_EXPLANATIONS_READY' && payload) {
+      metricsStore.updateSHAPExplanations(payload as SHAPExplanationsPayload);
+    }
+    
+    if (name === 'METRIC_SCALAR' && payload) {
+      metricsStore.addMetricScalar(payload as MetricScalarPayload);
+    }
+    
+    if (name === 'EVALUATION_COMPLETE' && payload) {
+      metricsStore.setEvaluationComplete(payload as EvaluationCompletePayload);
     }
 
     set((state) => ({

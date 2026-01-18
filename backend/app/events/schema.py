@@ -99,6 +99,15 @@ class EventType(str, Enum):
     LOG_LINE = "LOG_LINE"
     TRAIN_RUN_FINISHED = "TRAIN_RUN_FINISHED"
     
+    # Stage 3b: EVALUATION (comprehensive metrics after training)
+    EVALUATION_STARTED = "EVALUATION_STARTED"
+    EVALUATION_METRICS_READY = "EVALUATION_METRICS_READY"
+    CLASSIFICATION_METRICS_READY = "CLASSIFICATION_METRICS_READY"
+    REGRESSION_METRICS_READY = "REGRESSION_METRICS_READY"
+    PRECISION_RECALL_CURVE_READY = "PRECISION_RECALL_CURVE_READY"
+    SHAP_EXPLANATIONS_READY = "SHAP_EXPLANATIONS_READY"
+    EVALUATION_COMPLETE = "EVALUATION_COMPLETE"
+    
     # Stage 4: REVIEW / EDIT
     REPORT_READY = "REPORT_READY"
     NOTEBOOK_READY = "NOTEBOOK_READY"
@@ -356,6 +365,114 @@ class TrainRunFinishedPayload(BaseModel):
     run_id: str
     status: str
     final_metrics: Dict[str, float]
+
+
+# --- Stage 3b: EVALUATION (comprehensive metrics) ---
+
+class EvaluationStartedPayload(BaseModel):
+    run_id: str
+    task_type: str  # 'classification' or 'regression'
+    message: str
+
+
+class ClassificationMetricsPayload(BaseModel):
+    """Comprehensive classification metrics"""
+    run_id: str
+    accuracy: float
+    balanced_accuracy: float
+    precision: float
+    recall: float
+    f1: float
+    roc_auc: Optional[float] = None
+    mcc: float  # Matthews Correlation Coefficient
+    cohen_kappa: float
+    log_loss: Optional[float] = None
+    average_precision: Optional[float] = None
+    specificity: Optional[float] = None
+    sensitivity: Optional[float] = None
+    n_classes: int
+    class_labels: List[Any]
+    class_distribution: Dict[str, int]
+    precision_per_class: Optional[List[float]] = None
+    recall_per_class: Optional[List[float]] = None
+    f1_per_class: Optional[List[float]] = None
+
+
+class RegressionMetricsPayload(BaseModel):
+    """Comprehensive regression metrics"""
+    run_id: str
+    mse: float
+    rmse: float
+    mae: float
+    median_ae: float
+    r2: float
+    explained_variance: float
+    max_error: float
+    mape: Optional[float] = None
+    smape: Optional[float] = None
+    n_samples: int
+
+
+class ROCCurveDataPayload(BaseModel):
+    """ROC curve data for visualization"""
+    run_id: str
+    fpr: List[float]  # False positive rate
+    tpr: List[float]  # True positive rate
+    thresholds: List[float]
+    auc: float
+    asset_url: Optional[str] = None
+
+
+class PrecisionRecallCurvePayload(BaseModel):
+    """Precision-Recall curve data"""
+    run_id: str
+    precision: List[float]
+    recall: List[float]
+    thresholds: List[float]
+    average_precision: float
+    asset_url: Optional[str] = None
+
+
+class ConfusionMatrixDataPayload(BaseModel):
+    """Confusion matrix data"""
+    run_id: str
+    matrix: List[List[int]]
+    labels: Optional[List[str]] = None
+    true_positives: Optional[int] = None
+    true_negatives: Optional[int] = None
+    false_positives: Optional[int] = None
+    false_negatives: Optional[int] = None
+    asset_url: Optional[str] = None
+
+
+class FeatureImportanceDataPayload(BaseModel):
+    """Feature importance data"""
+    run_id: str
+    features: List[Dict[str, Any]]  # [{feature: str, importance: float}]
+    method: str = "model"  # 'model', 'permutation', 'shap'
+    asset_url: Optional[str] = None
+
+
+class SHAPExplanationsPayload(BaseModel):
+    """SHAP explanations data"""
+    run_id: str
+    available: bool
+    feature_names: Optional[List[str]] = None
+    global_importance: Optional[Dict[str, float]] = None
+    importance_ranking: Optional[List[Dict[str, Any]]] = None
+    message: Optional[str] = None
+    asset_url: Optional[str] = None
+
+
+class EvaluationCompletePayload(BaseModel):
+    """Final evaluation summary"""
+    run_id: str
+    task_type: str
+    primary_metric: str
+    primary_value: float
+    all_metrics: Dict[str, Any]
+    artifacts: List[Dict[str, str]]  # [{type: str, url: str}]
+    shap_available: bool
 
 
 # --- Stage 4: REVIEW / EDIT ---

@@ -2,6 +2,7 @@
 Tabular training runner with streaming events.
 - Uses sklearn pipelines
 - Emits TRAIN_* events per contract
+- Computes comprehensive evaluation metrics
 """
 import asyncio
 import time
@@ -9,6 +10,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Dict, Any, List, Optional
 import os
+import logging
 
 import numpy as np
 import pandas as pd
@@ -30,6 +32,9 @@ from app.events.bus import event_bus
 from app.events.schema import EventType, StageID, StageStatus
 from app.api.assets import ASSET_ROOT
 from app.ml.artifacts import save_json_asset, asset_url
+from app.ml.metrics import MetricsCalculator, SHAPExplainer, SHAP_AVAILABLE
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -196,68 +201,325 @@ class TabularTrainer:
         await loop.run_in_executor(None, pipeline.fit, X_train, y_train)
         await progress_task
 
+        # =====================================================================
+        # EVALUATION PHASE - Comprehensive metrics with real-time streaming
+        # =====================================================================
+        await self._emit(
+            EventType.EVALUATION_STARTED,
+            {
+                "run_id": self.run_id,
+                "task_type": task_type,
+                "message": "Computing comprehensive evaluation metrics...",
+            },
+        )
+
         y_pred = pipeline.predict(X_test)
+        
+        # Get probabilities for classification
+        y_prob = None
+        if is_classification and hasattr(pipeline, "predict_proba"):
+            try:
+                y_prob = pipeline.predict_proba(X_test)
+            except Exception as e:
+                logger.warning(f"Could not get prediction probabilities: {e}")
+
         metrics: Dict[str, float] = {}
         artifacts: Dict[str, str] = {}
+        all_metrics: Dict[str, Any] = {}
+
         if is_classification:
-            acc = accuracy_score(y_test, y_pred)
-            f1 = f1_score(y_test, y_pred, average="weighted")
-            metrics = {"accuracy": float(acc), "f1": float(f1)}
-            cm = confusion_matrix(y_test, y_pred).tolist()
-            cm_path = save_json_asset(self.config.project_id, f"artifacts/{self.run_id}_confusion.json", {"confusion": cm})
-            artifacts["confusion"] = asset_url(cm_path)
+            # Compute comprehensive classification metrics
+            all_metrics = MetricsCalculator.classification_metrics(
+                y_test, y_pred, y_prob, labels=None
+            )
+            
+            # Basic metrics for backward compatibility
+            metrics = {
+                "accuracy": all_metrics.get("accuracy", 0.0),
+                "f1": all_metrics.get("f1", 0.0),
+            }
+            
+            # Stream accuracy metric
             await self._emit(
                 EventType.METRIC_SCALAR,
-                {"run_id": self.run_id, "name": "accuracy", "split": "test", "step": self.config.steps, "value": float(acc)},
+                {"run_id": self.run_id, "name": "accuracy", "split": "test", "step": self.config.steps, "value": all_metrics["accuracy"]},
             )
+            
+            # Emit comprehensive classification metrics
+            await self._emit(
+                EventType.CLASSIFICATION_METRICS_READY,
+                {
+                    "run_id": self.run_id,
+                    "accuracy": all_metrics.get("accuracy", 0.0),
+                    "balanced_accuracy": all_metrics.get("balanced_accuracy", 0.0),
+                    "precision": all_metrics.get("precision", 0.0),
+                    "recall": all_metrics.get("recall", 0.0),
+                    "f1": all_metrics.get("f1", 0.0),
+                    "roc_auc": all_metrics.get("roc_auc"),
+                    "mcc": all_metrics.get("mcc", 0.0),
+                    "cohen_kappa": all_metrics.get("cohen_kappa", 0.0),
+                    "log_loss": all_metrics.get("log_loss"),
+                    "average_precision": all_metrics.get("average_precision"),
+                    "specificity": all_metrics.get("specificity"),
+                    "sensitivity": all_metrics.get("sensitivity"),
+                    "n_classes": all_metrics.get("n_classes", 2),
+                    "class_labels": all_metrics.get("class_labels", []),
+                    "class_distribution": all_metrics.get("class_distribution", {}),
+                    "precision_per_class": all_metrics.get("precision_per_class"),
+                    "recall_per_class": all_metrics.get("recall_per_class"),
+                    "f1_per_class": all_metrics.get("f1_per_class"),
+                },
+            )
+            
+            # Confusion matrix
+            cm = all_metrics.get("confusion_matrix", [])
+            cm_data = {
+                "confusion": cm,
+                "labels": all_metrics.get("class_labels", []),
+                "accuracy": all_metrics.get("accuracy"),
+                "precision": all_metrics.get("precision"),
+                "recall": all_metrics.get("recall"),
+                "f1": all_metrics.get("f1"),
+            }
+            cm_path = save_json_asset(self.config.project_id, f"artifacts/{self.run_id}_confusion.json", cm_data)
+            artifacts["confusion"] = asset_url(cm_path)
+            
             await self._emit(
                 EventType.CONFUSION_MATRIX_READY,
-                {"asset_url": artifacts["confusion"]},
+                {
+                    "run_id": self.run_id,
+                    "matrix": cm,
+                    "labels": all_metrics.get("class_labels"),
+                    "true_positives": all_metrics.get("true_positives"),
+                    "true_negatives": all_metrics.get("true_negatives"),
+                    "false_positives": all_metrics.get("false_positives"),
+                    "false_negatives": all_metrics.get("false_negatives"),
+                    "asset_url": artifacts["confusion"],
+                },
             )
             await self._emit(
                 EventType.ARTIFACT_ADDED,
-                {"artifact": {"id": f"{self.run_id}_confusion", "type": "confusion_matrix", "name": "Confusion Matrix", "url": artifacts["confusion"], "meta": {}}},
+                {"artifact": {"id": f"{self.run_id}_confusion", "type": "confusion_matrix", "name": "Confusion Matrix", "url": artifacts["confusion"], "meta": {"accuracy": all_metrics.get("accuracy")}}},
             )
-            # Feature importance
-            try:
-                model = pipeline.named_steps["model"]
-                importances = model.feature_importances_
-                feature_names = pipeline.named_steps["preprocess"].get_feature_names_out()
-                ranked = sorted(zip(feature_names, importances), key=lambda x: x[1], reverse=True)
-                fi_path = save_json_asset(self.config.project_id, f"artifacts/{self.run_id}_feature_importance.json", {"feature_importance": ranked})
-                artifacts["feature_importance"] = asset_url(fi_path)
+            
+            # ROC Curve (if available)
+            if "roc_curve" in all_metrics:
+                roc_data = all_metrics["roc_curve"]
+                roc_path = save_json_asset(self.config.project_id, f"artifacts/{self.run_id}_roc_curve.json", {
+                    "fpr": roc_data["fpr"],
+                    "tpr": roc_data["tpr"],
+                    "thresholds": roc_data["thresholds"],
+                    "auc": all_metrics.get("roc_auc"),
+                })
+                artifacts["roc_curve"] = asset_url(roc_path)
+                
                 await self._emit(
-                    EventType.FEATURE_IMPORTANCE_READY,
-                    {"asset_url": artifacts["feature_importance"]},
+                    EventType.ROC_CURVE_READY,
+                    {
+                        "run_id": self.run_id,
+                        "fpr": roc_data["fpr"],
+                        "tpr": roc_data["tpr"],
+                        "thresholds": roc_data["thresholds"],
+                        "auc": all_metrics.get("roc_auc"),
+                        "asset_url": artifacts["roc_curve"],
+                    },
                 )
                 await self._emit(
                     EventType.ARTIFACT_ADDED,
-                    {"artifact": {"id": f"{self.run_id}_fi", "type": "feature_importance", "name": "Feature Importance", "url": artifacts["feature_importance"], "meta": {}}},
+                    {"artifact": {"id": f"{self.run_id}_roc", "type": "roc_curve", "name": "ROC Curve", "url": artifacts["roc_curve"], "meta": {"auc": all_metrics.get("roc_auc")}}},
                 )
-            except Exception:
-                pass
+            
+            # Precision-Recall Curve (if available)
+            if "pr_curve" in all_metrics:
+                pr_data = all_metrics["pr_curve"]
+                pr_path = save_json_asset(self.config.project_id, f"artifacts/{self.run_id}_pr_curve.json", {
+                    "precision": pr_data["precision"],
+                    "recall": pr_data["recall"],
+                    "thresholds": pr_data["thresholds"],
+                    "average_precision": all_metrics.get("average_precision"),
+                })
+                artifacts["pr_curve"] = asset_url(pr_path)
+                
+                await self._emit(
+                    EventType.PRECISION_RECALL_CURVE_READY,
+                    {
+                        "run_id": self.run_id,
+                        "precision": pr_data["precision"],
+                        "recall": pr_data["recall"],
+                        "thresholds": pr_data["thresholds"],
+                        "average_precision": all_metrics.get("average_precision"),
+                        "asset_url": artifacts["pr_curve"],
+                    },
+                )
+                await self._emit(
+                    EventType.ARTIFACT_ADDED,
+                    {"artifact": {"id": f"{self.run_id}_pr", "type": "pr_curve", "name": "Precision-Recall Curve", "url": artifacts["pr_curve"], "meta": {"average_precision": all_metrics.get("average_precision")}}},
+                )
+
+            # Feature importance
+            try:
+                model = pipeline.named_steps["model"]
+                if hasattr(model, "feature_importances_"):
+                    importances = model.feature_importances_
+                    feature_names = pipeline.named_steps["preprocess"].get_feature_names_out()
+                    ranked = [{"feature": str(f), "importance": float(i)} for f, i in sorted(zip(feature_names, importances), key=lambda x: x[1], reverse=True)]
+                    fi_path = save_json_asset(self.config.project_id, f"artifacts/{self.run_id}_feature_importance.json", {"feature_importance": ranked})
+                    artifacts["feature_importance"] = asset_url(fi_path)
+                    
+                    await self._emit(
+                        EventType.FEATURE_IMPORTANCE_READY,
+                        {
+                            "run_id": self.run_id,
+                            "features": ranked,
+                            "method": "model",
+                            "asset_url": artifacts["feature_importance"],
+                        },
+                    )
+                    await self._emit(
+                        EventType.ARTIFACT_ADDED,
+                        {"artifact": {"id": f"{self.run_id}_fi", "type": "feature_importance", "name": "Feature Importance", "url": artifacts["feature_importance"], "meta": {}}},
+                    )
+            except Exception as e:
+                logger.warning(f"Could not compute feature importance: {e}")
+            
+            # SHAP explanations (if available)
+            if SHAP_AVAILABLE:
+                try:
+                    model = pipeline.named_steps["model"]
+                    # Transform training data for SHAP
+                    X_train_transformed = pipeline.named_steps["preprocess"].transform(X_train)
+                    X_test_transformed = pipeline.named_steps["preprocess"].transform(X_test)
+                    
+                    explainer = SHAPExplainer(model)
+                    explainer.fit(X_train_transformed, max_samples=50)
+                    shap_results = explainer.explain(X_test_transformed, max_samples=50)
+                    
+                    if shap_results.get("available"):
+                        shap_path = save_json_asset(self.config.project_id, f"artifacts/{self.run_id}_shap.json", shap_results)
+                        artifacts["shap"] = asset_url(shap_path)
+                        
+                        await self._emit(
+                            EventType.SHAP_EXPLANATIONS_READY,
+                            {
+                                "run_id": self.run_id,
+                                "available": True,
+                                "feature_names": shap_results.get("feature_names"),
+                                "global_importance": shap_results.get("global_importance"),
+                                "importance_ranking": shap_results.get("importance_ranking"),
+                                "asset_url": artifacts["shap"],
+                            },
+                        )
+                        await self._emit(
+                            EventType.ARTIFACT_ADDED,
+                            {"artifact": {"id": f"{self.run_id}_shap", "type": "shap_explanations", "name": "SHAP Explanations", "url": artifacts["shap"], "meta": {}}},
+                        )
+                except Exception as e:
+                    logger.warning(f"Could not compute SHAP explanations: {e}")
+
         else:
-            # Some sklearn versions do not support the `squared` kwarg, so compute RMSE manually.
-            mse = mean_squared_error(y_test, y_pred)
-            rmse = float(mse**0.5)
-            r2 = r2_score(y_test, y_pred)
-            metrics = {"rmse": float(rmse), "r2": float(r2)}
+            # REGRESSION METRICS
+            all_metrics = MetricsCalculator.regression_metrics(y_test, y_pred)
+            
+            # Basic metrics for backward compatibility
+            metrics = {
+                "rmse": all_metrics.get("rmse", 0.0),
+                "r2": all_metrics.get("r2", 0.0),
+            }
+            
+            # Stream RMSE metric
             await self._emit(
                 EventType.METRIC_SCALAR,
-                {"run_id": self.run_id, "name": "rmse", "split": "test", "step": self.config.steps, "value": float(rmse)},
+                {"run_id": self.run_id, "name": "rmse", "split": "test", "step": self.config.steps, "value": all_metrics["rmse"]},
             )
+            
+            # Emit comprehensive regression metrics
+            await self._emit(
+                EventType.REGRESSION_METRICS_READY,
+                {
+                    "run_id": self.run_id,
+                    "mse": all_metrics.get("mse", 0.0),
+                    "rmse": all_metrics.get("rmse", 0.0),
+                    "mae": all_metrics.get("mae", 0.0),
+                    "median_ae": all_metrics.get("median_ae", 0.0),
+                    "r2": all_metrics.get("r2", 0.0),
+                    "explained_variance": all_metrics.get("explained_variance", 0.0),
+                    "max_error": all_metrics.get("max_error", 0.0),
+                    "mape": all_metrics.get("mape"),
+                    "smape": all_metrics.get("smape"),
+                    "n_samples": all_metrics.get("n_samples", len(y_test)),
+                },
+            )
+            
             # Residuals
-            residuals = (y_test - y_pred).tolist()
-            resid_path = save_json_asset(self.config.project_id, f"artifacts/{self.run_id}_residuals.json", {"residuals": residuals})
+            residuals_data = all_metrics.get("residuals", {})
+            resid_path = save_json_asset(self.config.project_id, f"artifacts/{self.run_id}_residuals.json", {
+                "residuals": residuals_data.get("values", []),
+                "mean": residuals_data.get("mean"),
+                "std": residuals_data.get("std"),
+                "y_true_stats": all_metrics.get("y_true_stats"),
+                "y_pred_stats": all_metrics.get("y_pred_stats"),
+            })
             artifacts["residuals"] = asset_url(resid_path)
+            
             await self._emit(
                 EventType.RESIDUALS_PLOT_READY,
                 {"asset_url": artifacts["residuals"]},
             )
             await self._emit(
                 EventType.ARTIFACT_ADDED,
-                {"artifact": {"id": f"{self.run_id}_resid", "type": "residuals", "name": "Residuals", "url": artifacts["residuals"], "meta": {}}},
+                {"artifact": {"id": f"{self.run_id}_resid", "type": "residuals", "name": "Residuals", "url": artifacts["residuals"], "meta": {"rmse": all_metrics.get("rmse")}}},
             )
+            
+            # Feature importance for regression
+            try:
+                model = pipeline.named_steps["model"]
+                if hasattr(model, "feature_importances_"):
+                    importances = model.feature_importances_
+                    feature_names = pipeline.named_steps["preprocess"].get_feature_names_out()
+                    ranked = [{"feature": str(f), "importance": float(i)} for f, i in sorted(zip(feature_names, importances), key=lambda x: x[1], reverse=True)]
+                    fi_path = save_json_asset(self.config.project_id, f"artifacts/{self.run_id}_feature_importance.json", {"feature_importance": ranked})
+                    artifacts["feature_importance"] = asset_url(fi_path)
+                    
+                    await self._emit(
+                        EventType.FEATURE_IMPORTANCE_READY,
+                        {
+                            "run_id": self.run_id,
+                            "features": ranked,
+                            "method": "model",
+                            "asset_url": artifacts["feature_importance"],
+                        },
+                    )
+                    await self._emit(
+                        EventType.ARTIFACT_ADDED,
+                        {"artifact": {"id": f"{self.run_id}_fi", "type": "feature_importance", "name": "Feature Importance", "url": artifacts["feature_importance"], "meta": {}}},
+                    )
+            except Exception as e:
+                logger.warning(f"Could not compute feature importance: {e}")
+
+        # Save comprehensive metrics as a single artifact
+        full_metrics_path = save_json_asset(self.config.project_id, f"artifacts/{self.run_id}_full_metrics.json", {
+            "task_type": task_type,
+            "metrics": all_metrics,
+            "run_id": self.run_id,
+        })
+        artifacts["full_metrics"] = asset_url(full_metrics_path)
+        
+        # Emit evaluation complete
+        primary_metric = "accuracy" if is_classification else "rmse"
+        primary_value = all_metrics.get(primary_metric, 0.0)
+        
+        await self._emit(
+            EventType.EVALUATION_COMPLETE,
+            {
+                "run_id": self.run_id,
+                "task_type": task_type,
+                "primary_metric": primary_metric,
+                "primary_value": primary_value,
+                "all_metrics": all_metrics,
+                "artifacts": [{"type": k, "url": v} for k, v in artifacts.items()],
+                "shap_available": "shap" in artifacts,
+            },
+        )
 
         await self._emit(
             EventType.TRAIN_RUN_FINISHED,
@@ -269,4 +531,4 @@ class TabularTrainer:
             stage_status=StageStatus.COMPLETED,
         )
 
-        return {"metrics": metrics, "run_id": self.run_id, "artifacts": artifacts}
+        return {"metrics": metrics, "all_metrics": all_metrics, "run_id": self.run_id, "artifacts": artifacts}
