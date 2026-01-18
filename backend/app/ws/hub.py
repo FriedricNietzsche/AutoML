@@ -29,26 +29,31 @@ class ConnectionManager:
         Accept a new WebSocket connection and subscribe to project events.
         """
         await websocket.accept()
+        # Small delay to ensure handshake is fully processed by browser before we flood it with data
+        await asyncio.sleep(0.1)
         
-        async with self._lock:
-            if project_id not in self._connections:
-                self._connections[project_id] = set()
-            self._connections[project_id].add(websocket)
-        
-        logger.info(f"WebSocket connected for project {project_id}. Total connections: {len(self._connections[project_id])}")
-        
-        # Subscribe this connection to the event bus
-        async def on_event(event: dict, _project_id: str = project_id):
-            await self._send_to_socket(websocket, event, project_id=_project_id)
-        
-        unsubscribe = await event_bus.subscribe(project_id, on_event)
-        self._unsubscribers[websocket] = unsubscribe
-        
-        # Send HELLO message
-        await self._send_hello(websocket, project_id)
-        
-        # Send initial STAGE_STATUS via conductor (goes through the bus)
-        await conductor.emit_current_status(project_id)
+        try:
+            async with self._lock:
+                if project_id not in self._connections:
+                    self._connections[project_id] = set()
+                self._connections[project_id].add(websocket)
+            
+            logger.info(f"WebSocket connected for project {project_id}. Total connections: {len(self._connections.get(project_id, set()))}")
+            
+            # Subscribe this connection to the event bus
+            async def on_event(event: dict, _project_id: str = project_id):
+                await self._send_to_socket(websocket, event, project_id=_project_id)
+            
+            unsubscribe = await event_bus.subscribe(project_id, on_event)
+            self._unsubscribers[websocket] = unsubscribe
+            
+            # Send initial state
+            await self._send_hello(websocket, project_id)
+            await conductor.emit_current_status(project_id)
+        except Exception as e:
+            logger.error(f"Error during WebSocket initialization for {project_id}: {e}")
+            raise
+
     
     async def disconnect(self, websocket: WebSocket, project_id: str) -> None:
         """

@@ -116,10 +116,11 @@ export function createWebSocketClient(opts: WSClientOptions): WSClient {
 
   const close = () => {
     closed = true;
-    if (socket && socket.readyState !== WebSocket.CLOSED) {
+    if (socket && socket.readyState !== WebSocket.CLOSED && socket.readyState !== WebSocket.CLOSING) {
       socket.close();
     }
   };
+
 
   return { send, close };
 }

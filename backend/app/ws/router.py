@@ -15,29 +15,28 @@ router = APIRouter(tags=["websocket"])
 async def websocket_endpoint(websocket: WebSocket, project_id: str):
     """
     WebSocket endpoint for real-time project updates.
-    
-    Connect to receive:
-    - HELLO: Initial connection acknowledgment
-    - STAGE_STATUS: Current stage and status updates
-    - Various stage-specific events (PROMPT_PARSED, TRAIN_PROGRESS, etc.)
-    
-    Send messages to trigger actions (future implementation).
     """
-    await manager.connect(websocket, project_id)
-    
     try:
-        while True:
-            # Receive messages from client (for future chat/command handling)
-            data = await websocket.receive_json()
-            logger.info(f"Received from client {project_id}: {data}")
-            
-            # TODO: Handle incoming messages (chat, commands, etc.)
-            # For now, just acknowledge receipt
-            # This will be expanded in later tasks
-            
-    except WebSocketDisconnect:
-        await manager.disconnect(websocket, project_id)
-        logger.info(f"Client disconnected from project {project_id}")
+        # Step 1: Initialize connection and subscribe to events
+        await manager.connect(websocket, project_id)
+        
+        # Step 2: Keep alive / Receive loop
+        try:
+            while True:
+                # We use receive_text() to wait for messages or keep connection open.
+                # Most clients will only listen, but this keeps the task from completing.
+                data = await websocket.receive_text()
+                logger.info(f"Received from client {project_id}: {data}")
+        except WebSocketDisconnect:
+            logger.info(f"Client disconnected gracefully from {project_id}")
+        except Exception as e:
+            logger.error(f"Error in WebSocket loop for {project_id}: {e}")
     except Exception as e:
-        logger.error(f"WebSocket error for project {project_id}: {e}")
-        await manager.disconnect(websocket, project_id)
+        logger.error(f"Failed to establish WebSocket for {project_id}: {e}")
+    finally:
+        # Ensure cleanup on any exit
+        try:
+            await manager.disconnect(websocket, project_id)
+        except Exception as e:
+            logger.debug(f"Cleanup error for {project_id}: {e}")
+

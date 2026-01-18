@@ -43,8 +43,9 @@ async def upload_asset(file: UploadFile = File(...)) -> dict:
     return {"asset": str(dest.relative_to(ASSET_ROOT))}
 
 
-@router.get("/{asset_id}")
+@router.get("/{asset_id:path}")
 async def get_asset(asset_id: str):
+
     """Get asset details by ID."""
     path = _safe_path(asset_id)
     if not path.exists() or not path.is_file():

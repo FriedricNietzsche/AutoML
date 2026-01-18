@@ -8,8 +8,16 @@ import {
   type StageStatus,
   type StageStatusPayload,
   type WaitingConfirmationPayload,
+  type DatasetSampleReadyPayload,
+  type TrainProgressPayload,
+  type MetricScalarPayload,
+  type ArtifactAddedPayload,
+  type ProfileSummaryPayload,
 } from '../lib/contract';
 import { createWebSocketClient, type ConnectionStatus, type EventEnvelope, type WSClient } from '../lib/ws';
+
+const DEFAULT_PROJECT_ID =
+  (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_PROJECT_ID) || 'demo';
 
 type StageState = {
   id: StageID;
@@ -45,14 +53,14 @@ const normalizeStageState = (stage: any): StageState | null => {
     typeof stage.index === 'number'
       ? stage.index
       : Math.max(
-          STAGE_ORDER.findIndex((s) => s.id === stage.id),
-          0
-        );
+        STAGE_ORDER.findIndex((s) => s.id === stage.id),
+        0
+      );
   return { id: stage.id, status, index, message: typeof stage.message === 'string' ? stage.message : undefined };
 };
 
 const mergeStages = (prev: Record<StageID, StageState>, incoming?: StageState[]) => {
-  if (!incoming || incoming.length === 0) return prev;
+  if (!incoming || !Array.isArray(incoming) || incoming.length === 0) { console.debug("[projectStore] incoming not array:", typeof incoming); return prev; }
   const next = { ...prev };
   for (const stage of incoming) {
     const normalized = normalizeStageState(stage);
@@ -63,6 +71,30 @@ const mergeStages = (prev: Record<StageID, StageState>, incoming?: StageState[])
 };
 
 const MAX_EVENTS = 300;
+
+// Extended state for data-specific events
+export type DatasetSample = {
+  assetUrl: string;
+  columns: string[];
+  nRows: number;
+  images?: string[];  // For image datasets
+  sample_rows?: any[];  // For tabular datasets - actual row data
+};
+
+export type TrainingMetrics = {
+  runId: string;
+  metricsHistory: Array<{ step: number; name: string; split: string; value: number }>;
+  progress?: TrainProgressPayload;
+  artifacts: Array<{ id: string; type: string; name: string; url: string }>;
+};
+
+export type GDPathState = {
+  runId: string;
+  surfaceSpec?: any;
+  domainHalf?: number;
+  points: Array<{ x: number; y: number }>;
+  finished: boolean;
+};
 
 type ProjectStoreState = {
   projectId: string;
@@ -76,6 +108,14 @@ type ProjectStoreState = {
   lastEvent: EventEnvelope | null;
   error: string | null;
   wsClient: WSClient | null;
+
+  // Extended state
+  datasetSample: DatasetSample | null;
+  profileSummary: ProfileSummaryPayload | null;
+  trainingMetrics: TrainingMetrics | null;
+  gdPath: GDPathState | null;
+  artifacts: Array<{ id: string; type: string; name: string; url: string; meta?: any }>;
+
   connect: (opts?: { projectId?: string; wsBase?: string }) => void;
   disconnect: () => void;
   hydrate: () => Promise<void>;
@@ -84,7 +124,7 @@ type ProjectStoreState = {
 };
 
 export const useProjectStore = create<ProjectStoreState>((set, get) => ({
-  projectId: 'demo-project',
+  projectId: DEFAULT_PROJECT_ID,
   wsBase: undefined,
   apiBase: resolveHttpBase(),
   connectionStatus: 'idle',
@@ -95,13 +135,25 @@ export const useProjectStore = create<ProjectStoreState>((set, get) => ({
   lastEvent: null,
   error: null,
   wsClient: null,
+  datasetSample: null,
+  profileSummary: null,
+  trainingMetrics: null,
+  gdPath: null,
+  artifacts: [],
 
   connect: (opts) => {
-    const projectId = opts?.projectId ?? get().projectId;
-    const wsBase = opts?.wsBase ?? get().wsBase;
+    const { projectId: currentId, wsBase: currentBase, wsClient } = get();
+    const projectId = opts?.projectId ?? currentId;
+    const wsBase = opts?.wsBase ?? currentBase;
     const apiBase = resolveHttpBase(wsBase);
 
-    get().wsClient?.close();
+    // Skip if already connected to the same project
+    if (wsClient && currentId === projectId && currentBase === wsBase && (get().connectionStatus === 'open' || get().connectionStatus === 'connecting')) {
+      return;
+    }
+
+    wsClient?.close();
+
 
     const client = createWebSocketClient({
       projectId,
@@ -139,7 +191,11 @@ export const useProjectStore = create<ProjectStoreState>((set, get) => ({
       const res = await fetch(joinUrl(apiBase, `/api/projects/${projectId}/state`));
       if (!res.ok) throw new Error(`State fetch failed (${res.status})`);
       const json = (await res.json()) as ProjectSnapshot;
-      const incomingStages = mergeStages(get().stages, json.stages);
+      // Convert stages from object to array if needed
+      const stagesArray = json.stages && typeof json.stages === 'object' && !Array.isArray(json.stages)
+        ? Object.values(json.stages)
+        : json.stages;
+      const incomingStages = mergeStages(get().stages, stagesArray as any);
       const nextCurrent = json.current_stage && isStageId(json.current_stage.id) ? json.current_stage.id : get().currentStageId;
       set({
         stages: incomingStages,
@@ -158,8 +214,12 @@ export const useProjectStore = create<ProjectStoreState>((set, get) => ({
       const res = await fetch(joinUrl(apiBase, `/api/projects/${projectId}/confirm`), { method: 'POST' });
       if (!res.ok) throw new Error(`Confirm failed (${res.status})`);
       const json = (await res.json()) as ProjectSnapshot;
+      // Convert stages from object to array if needed
+      const stagesArray2 = json.stages && typeof json.stages === 'object' && !Array.isArray(json.stages)
+        ? Object.values(json.stages)
+        : json.stages;
       set({
-        stages: mergeStages(get().stages, json.stages),
+        stages: mergeStages(get().stages, stagesArray2 as any),
         currentStageId:
           json.current_stage && isStageId(json.current_stage.id) ? json.current_stage.id : get().currentStageId,
         waitingConfirmation: json.waiting_confirmation ?? null,
@@ -172,8 +232,9 @@ export const useProjectStore = create<ProjectStoreState>((set, get) => ({
 
   applyEvent: (evt: EventEnvelope) => {
     const name = evt.event?.name as EventType | undefined;
-    const payload = evt.event?.payload as StageStatusPayload | WaitingConfirmationPayload | undefined;
+    const payload = evt.event?.payload as any;
 
+    // Handle STAGE_STATUS
     if (name === 'STAGE_STATUS' && payload && isStageId((payload as StageStatusPayload).stage_id)) {
       const stagePayload = payload as StageStatusPayload;
       if (isStageStatus(stagePayload.status)) {
@@ -198,9 +259,116 @@ export const useProjectStore = create<ProjectStoreState>((set, get) => ({
       }
     }
 
+    // Handle WAITING_CONFIRMATION
     if (name === 'WAITING_CONFIRMATION' && payload) {
       const waitPayload = payload as WaitingConfirmationPayload;
       set({ waitingConfirmation: waitPayload });
+    }
+
+    // Handle DATASET_SAMPLE_READY
+    if (name === 'DATASET_SAMPLE_READY' && payload) {
+      const sample = payload as DatasetSampleReadyPayload;
+      set({
+        datasetSample: {
+          assetUrl: sample.asset_url,
+          columns: sample.columns || [],
+          nRows: sample.n_rows || 0,
+          images: (payload as any).images || [],
+          sample_rows: (payload as any).sample_rows || [],  // Capture sample rows
+        },
+      });
+    }
+
+    // Handle PROFILE_SUMMARY
+    if (name === 'PROFILE_SUMMARY' && payload) {
+      set({ profileSummary: payload as ProfileSummaryPayload });
+    }
+
+    // Handle TRAIN_RUN_STARTED
+    if (name === 'TRAIN_RUN_STARTED' && payload) {
+      set({
+        trainingMetrics: {
+          runId: payload.run_id,
+          metricsHistory: [],
+          artifacts: [],
+        },
+      });
+    }
+
+    // Handle TRAIN_PROGRESS
+    if (name === 'TRAIN_PROGRESS' && payload) {
+      set((state) => ({
+        trainingMetrics: state.trainingMetrics
+          ? { ...state.trainingMetrics, progress: payload as TrainProgressPayload }
+          : null,
+      }));
+    }
+
+    // Handle METRIC_SCALAR
+    if (name === 'METRIC_SCALAR' && payload) {
+      const metric = payload as MetricScalarPayload;
+      set((state) => ({
+        trainingMetrics: state.trainingMetrics
+          ? {
+            ...state.trainingMetrics,
+            metricsHistory: [...state.trainingMetrics.metricsHistory, {
+              step: metric.step,
+              name: metric.name,
+              split: metric.split,
+              value: metric.value,
+            }],
+          }
+          : null,
+      }));
+    }
+
+    // Handle ARTIFACT_ADDED
+    if (name === 'ARTIFACT_ADDED' && payload) {
+      const artifact = (payload as ArtifactAddedPayload).artifact;
+      set((state) => ({
+        artifacts: [...state.artifacts, artifact],
+        trainingMetrics: state.trainingMetrics
+          ? {
+            ...state.trainingMetrics,
+            artifacts: [...state.trainingMetrics.artifacts, artifact],
+          }
+          : state.trainingMetrics,
+      }));
+    }
+
+    // Handle GD visualization events
+    if (name === 'LOSS_SURFACE_SPEC_READY' && payload) {
+      set({
+        gdPath: {
+          runId: payload.run_id,
+          surfaceSpec: payload.surface_spec,
+          domainHalf: payload.surface_spec?.domainHalf,
+          points: [],
+          finished: false,
+        },
+      });
+    }
+
+    if (name === 'GD_PATH_STARTED' && payload) {
+      set((state) => ({
+        gdPath: state.gdPath
+          ? { ...state.gdPath, domainHalf: payload.domainHalf, points: payload.point0 ? [payload.point0] : [] }
+          : null,
+      }));
+    }
+
+    if (name === 'GD_PATH_UPDATE' && payload) {
+      set((state) => ({
+        gdPath: state.gdPath
+          ? { ...state.gdPath, points: [...state.gdPath.points, ...(payload.points || [])] }
+          : null,
+      }));
+    }
+
+    if (name === 'GD_PATH_FINISHED' && payload) {
+      set((state) => ({
+        gdPath: state.gdPath ? { ...state.gdPath, finished: true } : null,
+      }));
     }
 
     set((state) => ({

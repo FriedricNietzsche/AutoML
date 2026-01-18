@@ -17,15 +17,16 @@ export interface MetricsState {
   f1Series: MetricPoint[];
   rmseSeries: MetricPoint[];
   confusionTable: number[][] | null;
-  embeddingPoints: EmbeddingPoint[];
+  embeddingPoints: Array<{ id: number; x: number; y: number; label: number; weight: number }>;
   gradientPath: GradientPoint[];
-  residuals: ResidualPoint[];
+  residuals: Array<{ pred: number; true: number; residual: number }>;
   surfaceSpec: LossSurfaceSpec | null;
   pipelineGraph: { nodes: Array<{ id: string; label: string }>; edges: Array<{ from: string; to: string }> } | null;
   leaderboard: Array<{ rank: number; model: string; metricName: string; metricValue: number; params: Record<string, unknown> }>;
   metricsSummary: { accuracy?: number; f1?: number; rmse?: number };
   thinkingByStage: Partial<Record<StageID, string[]>>;
-  datasetPreview: { rows: number[][]; columns: string[]; dataType: 'tabular' | 'image'; imageData?: { width: number; height: number; pixels: Array<{ r: number; g: number; b: number }>; needsClientLoad?: boolean } } | null;
+  datasetPreview: { rows: any[]; columns: string[]; nRows: number; dataType: 'tabular' | 'image'; imageData?: { width: number; height: number; pixels: Array<{ r: number; g: number; b: number }>; needsClientLoad?: boolean } } | null;
+
 }
 
 const emptyMetrics: MetricsState = {
@@ -128,10 +129,24 @@ function reduceMetricsState(prev: MetricsState, event: MockWSEnvelope, assetMap:
         return { ...prev, gradientPath: meta.points as GradientPoint[] };
       }
       if (meta.kind === 'embedding_points' && meta.points) {
-        return { ...prev, embeddingPoints: meta.points as EmbeddingPoint[] };
+        return {
+          ...prev, embeddingPoints: (meta.points as any[]).map(p => ({
+            id: p.id ?? 0,
+            x: p.x,
+            y: p.y,
+            label: p.label ?? 0,
+            weight: p.weight ?? 1
+          }))
+        };
       }
       if (meta.kind === 'residuals' && meta.points) {
-        return { ...prev, residuals: meta.points as ResidualPoint[] };
+        return {
+          ...prev, residuals: (meta.points as any[]).map(p => ({
+            pred: p.pred ?? p.predicted ?? 0,
+            true: p.true ?? p.actual ?? 0,
+            residual: p.residual ?? ((p.pred ?? p.predicted ?? 0) - (p.true ?? p.actual ?? 0))
+          }))
+        };
       }
       if (meta.kind === 'pipeline_graph' && meta.nodes && meta.edges) {
         return { ...prev, pipelineGraph: { nodes: meta.nodes as Array<{ id: string; label: string }>, edges: meta.edges as Array<{ from: string; to: string }> } };
@@ -160,15 +175,15 @@ function reduceMetricsState(prev: MetricsState, event: MockWSEnvelope, assetMap:
         const existing = prev.lossSeries.find((p) => p.epoch === epoch);
         const nextPoint: LossPoint = existing
           ? {
-              ...existing,
-              train_loss: metricPayload.split === 'train' ? metricPayload.value : existing.train_loss,
-              val_loss: metricPayload.split === 'val' ? metricPayload.value : existing.val_loss,
-            }
+            ...existing,
+            train_loss: metricPayload.split === 'train' ? metricPayload.value : existing.train_loss,
+            val_loss: metricPayload.split === 'val' ? metricPayload.value : existing.val_loss,
+          }
           : {
-              epoch,
-              train_loss: metricPayload.split === 'train' ? metricPayload.value : metricPayload.value,
-              val_loss: metricPayload.split === 'val' ? metricPayload.value : metricPayload.value,
-            };
+            epoch,
+            train_loss: metricPayload.split === 'train' ? metricPayload.value : metricPayload.value,
+            val_loss: metricPayload.split === 'val' ? metricPayload.value : metricPayload.value,
+          };
 
         const nextLoss = [...prev.lossSeries.filter((p) => p.epoch !== epoch), nextPoint].sort((a, b) => a.epoch - b.epoch);
         return { ...prev, lossSeries: nextLoss };
@@ -205,12 +220,14 @@ function reduceMetricsState(prev: MetricsState, event: MockWSEnvelope, assetMap:
       return {
         ...prev,
         datasetPreview: {
-          rows: (meta.rows as number[][]) ?? [],
+          rows: (meta.rows as any[]) ?? [],
           columns: (meta.columns as string[]) ?? [],
+          nRows: (meta.nRows as number) ?? (meta.rows ? (meta.rows as any[]).length : 0),
           dataType: (meta.data_type as 'tabular' | 'image') ?? 'tabular',
           imageData: meta.image_data as any,
         },
       };
+
     }
     case 'CONFUSION_MATRIX_READY': {
       const assetUrl = payload?.asset_url as string | undefined;

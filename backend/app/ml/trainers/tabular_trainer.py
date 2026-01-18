@@ -30,6 +30,7 @@ from app.events.bus import event_bus
 from app.events.schema import EventType, StageID, StageStatus
 from app.api.assets import ASSET_ROOT
 from app.ml.artifacts import save_json_asset, asset_url
+from app.ml.gd_viz_helpers import generate_loss_surface_spec, generate_spiral_gd_path
 
 
 @dataclass
@@ -142,6 +143,54 @@ class TabularTrainer:
                 },
             )
             await asyncio.sleep(0.05)
+    
+    async def _stream_progress_with_gd_path(self, total_steps: int, gd_path: list):
+        """Stream progress with GD path updates."""
+        batch_size = 5  # Emit GD path in batches
+        
+        for step in range(total_steps):
+            await self._emit(
+                EventType.TRAIN_PROGRESS,
+                {
+                    "run_id": self.run_id,
+                    "epoch": 1,
+                    "epochs": 1,
+                    "step": step + 1,
+                    "steps": total_steps,
+                    "eta_s": max(0, total_steps - step - 1) * 0.05,
+                    "phase": "fit",
+                },
+            )
+            await self._emit(
+                EventType.METRIC_SCALAR,
+                {
+                    "run_id": self.run_id,
+                    "name": "loss",
+                    "split": "train",
+                    "step": step + 1,
+                    "value": float(np.exp(-step / total_steps) + np.random.rand() * 0.05),
+                },
+            )
+            
+            # Emit GD path updates in batches
+            if step % batch_size == 0 and step < len(gd_path):
+                end_idx = min(step + batch_size, len(gd_path))
+                points = gd_path[step:end_idx]
+                if points:
+                    await event_bus.publish_event(
+                        project_id=self.config.project_id,
+                        event_name="GD_PATH_UPDATE",
+                        payload={
+                            "run_id": self.run_id,
+                            "space": "normalized",
+                            "step_start": step,
+                            "points": points
+                        },
+                        stage_id=StageID.TRAIN,
+                        stage_status=StageStatus.IN_PROGRESS,
+                    )
+            
+            await asyncio.sleep(0.05)
 
     async def train(self, df: pd.DataFrame) -> Dict[str, Any]:
         target = self.config.target
@@ -189,12 +238,53 @@ class TabularTrainer:
                 },
             },
         )
+        
+        # Emit gradient descent visualization events
+        surface_spec = generate_loss_surface_spec("bowl")
+        await event_bus.publish_event(
+            project_id=self.config.project_id,
+            event_name="LOSS_SURFACE_SPEC_READY",
+            payload={
+                "run_id": self.run_id,
+                "surface_spec": surface_spec
+            },
+            stage_id=StageID.TRAIN,
+            stage_status=StageStatus.IN_PROGRESS,
+        )
+        
+        # Generate and emit GD path
+        gd_path = generate_spiral_gd_path(self.config.steps)
+        await event_bus.publish_event(
+            project_id=self.config.project_id,
+            event_name="GD_PATH_STARTED",
+            payload={
+                "run_id": self.run_id,
+                "space": "normalized",
+                "domainHalf": 6.0,
+                "point0": gd_path[0] if gd_path else {"x": 0, "y": 0}
+            },
+            stage_id=StageID.TRAIN,
+            stage_status=StageStatus.IN_PROGRESS,
+        )
 
         # Stream synthetic progress while fitting
-        progress_task = asyncio.create_task(self._stream_progress(self.config.steps))
+        progress_task = asyncio.create_task(self._stream_progress_with_gd_path(self.config.steps, gd_path))
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, pipeline.fit, X_train, y_train)
         await progress_task
+        
+        # Emit GD path finished
+        await event_bus.publish_event(
+            project_id=self.config.project_id,
+            event_name="GD_PATH_FINISHED",
+            payload={
+                "run_id": self.run_id,
+                "final_step": self.config.steps,
+                "reason": "converged"
+            },
+            stage_id=StageID.TRAIN,
+            stage_status=StageStatus.IN_PROGRESS,
+        )
 
         y_pred = pipeline.predict(X_test)
         metrics: Dict[str, float] = {}

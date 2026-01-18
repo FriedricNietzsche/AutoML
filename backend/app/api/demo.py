@@ -167,22 +167,44 @@ async def run_demo_workflow(project_id: str, prompt: str):
         split = "train"
         
         # Import data ingestion functions
-        from app.api.data import ingest_hf_images, _emit_sample, _emit_profile, _project_dir
+        from app.api.data import ingest_hf_images, ingest_hf, _emit_sample, _emit_profile, _project_dir
         
-        # Ingest images (this handles emitting DATASET_SAMPLE_READY)
+        # Detect dataset type from the selected dataset info
+        # Check if this is an image dataset or tabular dataset
+        is_image_dataset = task_type == "classification" and any(
+            keyword in dataset.lower() 
+            for keyword in ["image", "cifar", "mnist", "imagenet", "cat", "dog", "fashion"]
+        )
+        
+        # Ingest dataset (this handles emitting DATASET_SAMPLE_READY)
         try:
-            result = await ingest_hf_images(
-                project_id=project_id,
-                dataset=dataset,
-                split=split,
-                image_field="image",
-                label_field="label",
-                max_images=30,  # Keep small for demo
-            )
-            
-            completion_msg = f"✓ Loaded {dataset}"
-            completion_msg += f"\n  Format: Image classification"
-            completion_msg += f"\n  Samples: 30 images"
+            if is_image_dataset:
+                # Use image ingestion for image datasets
+                result = await ingest_hf_images(
+                    project_id=project_id,
+                    dataset=dataset,
+                    split=split,
+                    image_field="image",
+                    label_field="label",
+                    max_images=30,  # Keep small for demo
+                )
+                
+                completion_msg = f"✓ Loaded {dataset}"
+                completion_msg += f"\n  Format: Image classification"
+                completion_msg += f"\n  Samples: 30 images"
+            else:
+                # Use tabular ingestion for CSV/tabular datasets
+                result = await ingest_hf(
+                    project_id=project_id,
+                    dataset=dataset,
+                    split=split,
+                    max_rows=500,
+                )
+                
+                completion_msg = f"✓ Loaded {dataset}"
+                completion_msg += f"\n  Format: Tabular data"
+                completion_msg += f"\n  Rows: {result.get('rows', 0)}"
+                completion_msg += f"\n  Columns: {len(result.get('columns', []))}"
             
             await conductor.transition_to(
                 project_id,
@@ -254,16 +276,25 @@ async def run_demo_workflow(project_id: str, prompt: str):
         # Stage 4: Training
         await conductor.transition_to(project_id, StageID.TRAIN, StageStatus.IN_PROGRESS, "Training model...")
         
-        # Import training function
-        from app.api.train import train_image
+        # Import training functions
+        from app.api.train import train_image, train_tabular
         
         try:
-            result = await train_image(project_id=project_id, data_subdir="images")
+            if is_image_dataset:
+                result = await train_image(project_id=project_id, data_subdir="images")
+            else:
+                result = await train_tabular(
+                    project_id=project_id, 
+                    target=target if target != "unknown" else "target",
+                    task_type=task_type,
+                    model_id=selected_model.get("id", "auto")
+                )
             log.info(f"Training completed: {result}")
         except Exception as e:
             log.error(f"Training failed: {e}")
             await conductor.transition_to(project_id, StageID.TRAIN, StageStatus.FAILED, f"Training error: {e}")
             return
+
         
         await asyncio.sleep(0.5)
         

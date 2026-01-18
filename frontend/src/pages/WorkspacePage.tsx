@@ -22,5 +22,5 @@ export default function WorkspacePage() {
     return <Redirect to="/" />;
   }
 
-  return <AppShell />;
+  return <AppShell session={session} />;
 }

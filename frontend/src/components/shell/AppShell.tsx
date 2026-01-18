@@ -24,6 +24,9 @@ import { FolderOpen, PanelLeftOpen, PanelRightOpen } from 'lucide-react';
 import { useProjectStore } from '../../store/projectStore';
 import ThemedBackground from '../ThemedBackground';
 
+const DEFAULT_PROJECT_ID =
+  (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_PROJECT_ID) || 'demo';
+
 const nowTs = () => Date.now();
 
 const normalizePath = (path: string) => {
@@ -48,14 +51,14 @@ const upsertFileInTree = (
     rootIndex >= 0
       ? tree[rootIndex]
       : {
-          id: 'root',
-          name: 'Files',
-          type: 'folder',
-          path: '/',
-          isOpen: true,
-          updatedAt: nowTs(),
-          children: tree,
-        };
+        id: 'root',
+        name: 'Files',
+        type: 'folder',
+        path: '/',
+        isOpen: true,
+        updatedAt: nowTs(),
+        children: tree,
+      };
 
   const upsertUnderFolder = (folder: FileSystemNode, idx: number): FileSystemNode => {
     const isLeaf = idx === parts.length - 1;
@@ -90,14 +93,14 @@ const upsertFileInTree = (
       existingFolderIndex >= 0
         ? children[existingFolderIndex]
         : {
-            id: makeId('dir'),
-            name: seg,
-            type: 'folder',
-            path: folderPath,
-            isOpen: true,
-            updatedAt: nowTs(),
-            children: [],
-          };
+          id: makeId('dir'),
+          name: seg,
+          type: 'folder',
+          path: folderPath,
+          isOpen: true,
+          updatedAt: nowTs(),
+          children: [],
+        };
 
     const updatedFolder = upsertUnderFolder(nextFolder, idx + 1);
     if (existingFolderIndex >= 0) {
@@ -118,16 +121,16 @@ const upsertFileInTree = (
   return [updatedRoot];
 };
 
-export default function AppShell() {
+export default function AppShell({ session: sessionProp }: { session?: BuildSession }) {
   const { navigate } = useRouter();
   const { theme, toggleTheme } = useTheme();
 
-  const [session, setSession] = useLocalStorageState<BuildSession | null>('autoai.buildSession.current', null);
+  const [session, setSession] = useLocalStorageState<BuildSession | null>('autoai.buildSession.current', sessionProp ?? null);
 
   // Panel state
   const [leftCollapsed, setLeftCollapsed] = useLocalStorageState('leftPanelCollapsed', false);
   const [rightCollapsed, setRightCollapsed] = useLocalStorageState('rightPanelCollapsed', false);
-  
+
   // Resizable panels
   const { sizes, handlePointerDown, containerRef } = useResizablePanels({
     left: 360,
@@ -138,7 +141,7 @@ export default function AppShell() {
   const [files, setFiles] = useLocalStorageState<FileSystemNode[]>('vfs.files', initialFileSystem, { defer: true });
 
   // Backend WebSocket connection (Task 1.4)
-  const projectId = 'demo-project';
+  const projectId = sessionProp?.id || session?.id || DEFAULT_PROJECT_ID;
   const wsBase =
     (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_WS_BASE) ||
     (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_BACKEND_WS_BASE) ||
@@ -155,10 +158,10 @@ export default function AppShell() {
   useEffect(() => {
     connectProject({ projectId, wsBase });
     hydrate();
-  }, [connectProject, hydrate, projectId, wsBase]);
+  }, [projectId, wsBase]);
 
   // (VFS helpers are hoisted outside the component to keep updateFileContent stable)
-  
+
   // Helper to update file content deep in the tree (stable reference!)
   const updateFileContent = useCallback(
     (path: string, content: string | ((prev: string) => string)) => {
@@ -167,81 +170,81 @@ export default function AppShell() {
           typeof upsertFileInTree === 'function'
             ? upsertFileInTree
             : (
-                tree: FileSystemNode[],
-                filePathRaw: string,
-                nextContent: string | ((prev: string) => string)
-              ): FileSystemNode[] => {
-                const filePath = normalizePath(filePathRaw);
-                const parts = filePath.split('/').filter(Boolean);
-                if (parts.length === 0) return tree;
+              tree: FileSystemNode[],
+              filePathRaw: string,
+              nextContent: string | ((prev: string) => string)
+            ): FileSystemNode[] => {
+              const filePath = normalizePath(filePathRaw);
+              const parts = filePath.split('/').filter(Boolean);
+              if (parts.length === 0) return tree;
 
-                const rootIndex = tree.findIndex((n) => n.type === 'folder' && n.path === '/');
-                const root: FileSystemNode =
-                  rootIndex >= 0
-                    ? tree[rootIndex]
-                    : {
-                        id: 'root',
-                        name: 'Files',
-                        type: 'folder',
-                        path: '/',
-                        isOpen: true,
-                        updatedAt: nowTs(),
-                        children: tree,
-                      };
+              const rootIndex = tree.findIndex((n) => n.type === 'folder' && n.path === '/');
+              const root: FileSystemNode =
+                rootIndex >= 0
+                  ? tree[rootIndex]
+                  : {
+                    id: 'root',
+                    name: 'Files',
+                    type: 'folder',
+                    path: '/',
+                    isOpen: true,
+                    updatedAt: nowTs(),
+                    children: tree,
+                  };
 
-                const upsertUnderFolder = (folder: FileSystemNode, idx: number): FileSystemNode => {
-                  const isLeaf = idx === parts.length - 1;
-                  const seg = parts[idx];
-                  const children = folder.children ? [...folder.children] : [];
+              const upsertUnderFolder = (folder: FileSystemNode, idx: number): FileSystemNode => {
+                const isLeaf = idx === parts.length - 1;
+                const seg = parts[idx];
+                const children = folder.children ? [...folder.children] : [];
 
-                  if (isLeaf) {
-                    const targetPath = `${folder.path === '/' ? '' : folder.path}/${seg}`;
-                    const existingIndex = children.findIndex((c) => c.type === 'file' && c.path === targetPath);
-                    const prevContent = existingIndex >= 0 ? children[existingIndex].content || '' : '';
-                    const resolved = typeof nextContent === 'function' ? nextContent(prevContent) : nextContent;
-                    const fileNode: FileSystemNode = {
-                      id: existingIndex >= 0 ? children[existingIndex].id : makeId('file'),
-                      name: seg,
-                      type: 'file',
-                      path: targetPath,
-                      content: resolved,
-                      updatedAt: nowTs(),
-                    };
-                    if (existingIndex >= 0) children[existingIndex] = fileNode;
-                    else children.push(fileNode);
-                    return { ...folder, children, updatedAt: nowTs(), isOpen: folder.isOpen ?? true };
-                  }
-
-                  const folderPath = `${folder.path === '/' ? '' : folder.path}/${seg}`;
-                  const existingFolderIndex = children.findIndex((c) => c.type === 'folder' && c.path === folderPath);
-                  const nextFolder: FileSystemNode =
-                    existingFolderIndex >= 0
-                      ? children[existingFolderIndex]
-                      : {
-                          id: makeId('dir'),
-                          name: seg,
-                          type: 'folder',
-                          path: folderPath,
-                          isOpen: true,
-                          updatedAt: nowTs(),
-                          children: [],
-                        };
-
-                  const updatedFolder = upsertUnderFolder(nextFolder, idx + 1);
-                  if (existingFolderIndex >= 0) children[existingFolderIndex] = updatedFolder;
-                  else children.push(updatedFolder);
+                if (isLeaf) {
+                  const targetPath = `${folder.path === '/' ? '' : folder.path}/${seg}`;
+                  const existingIndex = children.findIndex((c) => c.type === 'file' && c.path === targetPath);
+                  const prevContent = existingIndex >= 0 ? children[existingIndex].content || '' : '';
+                  const resolved = typeof nextContent === 'function' ? nextContent(prevContent) : nextContent;
+                  const fileNode: FileSystemNode = {
+                    id: existingIndex >= 0 ? children[existingIndex].id : makeId('file'),
+                    name: seg,
+                    type: 'file',
+                    path: targetPath,
+                    content: resolved,
+                    updatedAt: nowTs(),
+                  };
+                  if (existingIndex >= 0) children[existingIndex] = fileNode;
+                  else children.push(fileNode);
                   return { ...folder, children, updatedAt: nowTs(), isOpen: folder.isOpen ?? true };
-                };
-
-                const updatedRoot = upsertUnderFolder(root, 0);
-                if (rootIndex >= 0) {
-                  const next = [...tree];
-                  next[rootIndex] = updatedRoot;
-                  return next;
                 }
 
-                return [updatedRoot];
+                const folderPath = `${folder.path === '/' ? '' : folder.path}/${seg}`;
+                const existingFolderIndex = children.findIndex((c) => c.type === 'folder' && c.path === folderPath);
+                const nextFolder: FileSystemNode =
+                  existingFolderIndex >= 0
+                    ? children[existingFolderIndex]
+                    : {
+                      id: makeId('dir'),
+                      name: seg,
+                      type: 'folder',
+                      path: folderPath,
+                      isOpen: true,
+                      updatedAt: nowTs(),
+                      children: [],
+                    };
+
+                const updatedFolder = upsertUnderFolder(nextFolder, idx + 1);
+                if (existingFolderIndex >= 0) children[existingFolderIndex] = updatedFolder;
+                else children.push(updatedFolder);
+                return { ...folder, children, updatedAt: nowTs(), isOpen: folder.isOpen ?? true };
               };
+
+              const updatedRoot = upsertUnderFolder(root, 0);
+              if (rootIndex >= 0) {
+                const next = [...tree];
+                next[rootIndex] = updatedRoot;
+                return next;
+              }
+
+              return [updatedRoot];
+            };
 
         return upsert(prevFiles, path, content);
       });
@@ -392,18 +395,18 @@ export default function AppShell() {
     { id: 'publishing', type: 'publishing', title: 'Publishing', closable: false },
     { id: 'console', type: 'console', title: 'Console', closable: false },
   ]);
-  
+
   const [activeTabId, setActiveTabId] = useLocalStorageState('activeTabId', 'preview');
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
 
   // Auto-switch to preview when running
   const handleRunPipeline = () => {
-      setActiveTabId('preview');
-      // If user reruns after READY, we show BUILDING state again.
-      if (session && session.status === 'ready') {
-        setSession({ ...session, status: 'building' });
-      }
-      runPipeline();
+    setActiveTabId('preview');
+    // If user reruns after READY, we show BUILDING state again.
+    if (session && session.status === 'ready') {
+      setSession({ ...session, status: 'building' });
+    }
+    runPipeline();
   };
 
   const handleGenerateData = () => {
@@ -477,16 +480,16 @@ export default function AppShell() {
 
     switch (activeTab.type) {
       case 'preview':
-        return <PreviewPane 
-            files={files} 
-            isRunning={isRunning} 
-            onSimulationComplete={() => {
-              completePipeline();
-              if (session) setSession({ ...session, status: 'ready' });
-            }}
-            updateFileContent={updateFileContent}
-            hasSession={!!session}
-            sessionStatus={session?.status ?? 'building'}
+        return <PreviewPane
+          files={files}
+          isRunning={isRunning}
+          onSimulationComplete={() => {
+            completePipeline();
+            if (session) setSession({ ...session, status: 'ready' });
+          }}
+          updateFileContent={updateFileContent}
+          hasSession={!!session}
+          sessionStatus={session?.status ?? 'building'}
         />;
       case 'dashboard':
         return <DashboardPane files={files} />;

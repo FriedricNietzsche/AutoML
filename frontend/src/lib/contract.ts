@@ -47,7 +47,11 @@ export type EventType =
   | 'CODE_WORKSPACE_READY'
   | 'EDIT_SUGGESTIONS'
   | 'EXPORT_PROGRESS'
-  | 'EXPORT_READY';
+  | 'EXPORT_READY'
+  | 'LOSS_SURFACE_SPEC_READY'
+  | 'GD_PATH_STARTED'
+  | 'GD_PATH_UPDATE'
+  | 'GD_PATH_FINISHED';
 
 export interface StageDefinition {
   id: StageID;

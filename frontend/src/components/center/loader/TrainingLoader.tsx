@@ -13,7 +13,8 @@ import { useMockAutoMLStream } from '../../../mock/useMockAutoMLStream';
 import { useLiveMetrics } from '../../../hooks/useLiveMetrics';
 import type { ScenarioId } from '../../../mock/scenarios';
 import type { MockWSEnvelope } from '../../../mock/backendEventTypes';
-import type { ArtifactAddedPayload, LogLinePayload } from '../../../lib/contract';
+import { useProjectMetrics } from '../../../hooks/useProjectMetrics';
+import type { ArtifactAddedPayload, EventType, LogLinePayload, StageID, StageStatusPayload } from '../../../lib/contract';
 import { SCENARIO_VIZ, type LoaderStepId } from '../../../mock/scenarioVizConfig';
 import { useProjectStore } from '../../../store/projectStore';
 
@@ -27,6 +28,17 @@ interface LossPoint {
   train_loss: number;
   val_loss: number;
 }
+
+const STAGE_TO_UI: Record<StageID, number> = {
+  PARSE_INTENT: 1,
+  DATA_SOURCE: 1,
+  PROFILE_DATA: 2,
+  PREPROCESS: 2,
+  MODEL_SELECT: 3,
+  TRAIN: 4,
+  REVIEW_EDIT: 5,
+  EXPORT: 5,
+};
 
 function mapMetricSeries(series: MetricPoint[], metricKind: 'accuracy' | 'f1' | 'rmse') {
   return series.map((point, idx) => {
@@ -151,9 +163,9 @@ function MatrixGrid({
                 reducedMotion
                   ? undefined
                   : {
-                      opacity: 1,
-                      scale: isOpCell ? 1.02 : 1,
-                    }
+                    opacity: 1,
+                    scale: isOpCell ? 1.02 : 1,
+                  }
               }
               transition={reducedMotion ? undefined : { type: 'spring', stiffness: 320, damping: 28 }}
               className={clsx(
@@ -201,9 +213,13 @@ function computeWeightedPhase(phases: StepPhase[], elapsedMs: number, durationMs
   return { phaseIndex: idx, phase, phaseProgress, phases, durs };
 }
 
-export default function TrainingLoader({ onComplete, updateFileContent, scenarioId, seed, useMockStream = true }: TrainingLoaderProps) {
+export default function TrainingLoader({ onComplete, updateFileContent, scenarioId, seed, useMockStream = false }: TrainingLoaderProps) {
   const reducedMotionPref = useReducedMotion();
   const reducedMotion = !!reducedMotionPref;
+  const projectEvents = useProjectStore((state) => state.events);
+  const projectLastEvent = useProjectStore((state) => state.lastEvent);
+  const projectStages = useProjectStore((state) => state.stages);
+  const projectCurrentStageId = useProjectStore((state) => state.currentStageId);
 
   // Stage management
   const [currentStage, setCurrentStage] = useState<number>(0); // 0 = initial, 1-5 = stages
@@ -223,10 +239,73 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
     seed,
     enabled: useMockStream && currentStage > 0,
   });
-  const { metricsState: liveMetrics } = useLiveMetrics();
+
+  // Use real live metrics from projectStore
+  const liveMetrics = useProjectMetrics();
+
+  // Use mock metrics if useMockStream is true, otherwise use live project metrics
   const metricsState = useMockStream ? mockMetrics : liveMetrics;
-  const events = useMockStream ? mockEvents : [];
+  const events = useMockStream ? mockEvents : projectEvents;
   const applyProjectEvent = useProjectStore((state) => state.applyEvent);
+
+  // React to live backend stage transitions (WS)
+  const prevStageRef = useRef<number>(currentStage);
+  useEffect(() => {
+    if (useMockStream) return;
+    const mapped = STAGE_TO_UI[projectCurrentStageId];
+    if (mapped && mapped !== currentStage) {
+      setCurrentStage(mapped);
+      setIsStageRunning(true);
+      setStageCompleted(false);
+      setStepIndex(0);
+      setStepStartedAt(nowRef.current || 0);
+    }
+    prevStageRef.current = currentStage;
+  }, [projectCurrentStageId, currentStage, useMockStream]);
+
+  useEffect(() => {
+    if (useMockStream) return;
+    const evt = projectLastEvent;
+    const name = evt?.event?.name as EventType | undefined;
+    if (name !== 'STAGE_STATUS' || !evt) return;
+    const payload = evt.event?.payload as StageStatusPayload | undefined;
+
+    if (!payload || !STAGE_TO_UI[payload.stage_id]) return;
+    const mapped = STAGE_TO_UI[payload.stage_id];
+    const status = payload.status;
+    if (mapped !== currentStage) {
+      setCurrentStage(mapped);
+      setStepIndex(0);
+      setStepStartedAt(nowRef.current || 0);
+    }
+    if (status === 'IN_PROGRESS' || status === 'WAITING_CONFIRMATION') {
+      setIsStageRunning(true);
+      setStageCompleted(false);
+    } else if (status === 'COMPLETED' || status === 'SKIPPED') {
+      setIsStageRunning(false);
+      setStageCompleted(true);
+    } else if (status === 'FAILED') {
+      setIsStageRunning(false);
+    }
+  }, [projectLastEvent, useMockStream, currentStage]);
+
+  useEffect(() => {
+    if (useMockStream) return;
+    const allStages = Object.values(projectStages ?? {});
+    const active = allStages.find((s) => s.status === 'IN_PROGRESS' || s.status === 'WAITING_CONFIRMATION');
+    const latestCompleted = allStages
+      .filter((s) => s.status === 'COMPLETED' || s.status === 'SKIPPED')
+      .sort((a, b) => b.index - a.index)[0];
+    const target = active?.id ?? latestCompleted?.id ?? 'PARSE_INTENT';
+    const mapped = STAGE_TO_UI[target as StageID];
+    if (mapped && mapped !== currentStage) {
+      setCurrentStage(mapped);
+      setStepIndex(0);
+      setStepStartedAt(nowRef.current || 0);
+    }
+    setIsStageRunning(!!active);
+    setStageCompleted(!active && !!latestCompleted);
+  }, [projectStages, currentStage, useMockStream]);
 
   // Load actual image pixels client-side for image data
   const [loadedImagePixels, setLoadedImagePixels] = useState<Array<{ r: number; g: number; b: number }> | null>(null);
@@ -341,7 +420,14 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
     ctx.drawImage(offscreen, 0, 0);
   }, [currentStage, loadedImagePixels, metricsState.datasetPreview?.dataType, metricsState.datasetPreview?.imageData?.needsClientLoad]);
 
-  const stage1Thinking = metricsState.thinkingByStage?.DATA_SOURCE ?? [];
+  // Convert stage thinking from string to array
+  // Combine thinking from both initial stages that map to UI Stage 1
+  const stage1ThinkingStr = [
+    metricsState.thinkingByStage?.PARSE_INTENT,
+    metricsState.thinkingByStage?.DATA_SOURCE
+  ].filter(Boolean).join('\n');
+  const stage1Thinking = stage1ThinkingStr ? stage1ThinkingStr.split('\n').filter(Boolean) : [];
+
 
   // Keep Stage 1 view pinned to the latest streamed message.
   useEffect(() => {
@@ -360,7 +446,7 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
   }, [currentStage, reducedMotion, stage1Thinking.length]);
 
   const scenarioConfig = useMemo(() => SCENARIO_VIZ[activeScenario], [activeScenario]);
-  
+
   // Define one animation per stage
   const stageDefinitions = useMemo<StepDef[]>(() => [
     {
@@ -543,7 +629,7 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
     if (metricKind === 'f1') return f1Full.length > 0 ? f1Full : accFull;
     return accFull;
   }, [accFull, f1Full, metricKind, rmseFull]);
-  
+
   const lastLossValueRef = useRef<number | null>(null);
   const lastAccValueRef = useRef<number | null>(null);
 
@@ -670,10 +756,10 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
   // Check when stage animation is complete
   useEffect(() => {
     if (!isStageRunning || currentStage === 0) return;
-    
+
     const stageDef = stageDefinitions[currentStage - 1];
     if (!stageDef) return;
-    
+
     const timeout = setTimeout(() => {
       setIsStageRunning(false);
       setStageCompleted(true);
@@ -686,7 +772,7 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
         }, 1500); // Give user a moment to see completion message
       }
     }, stageDef.durationMs);
-    
+
     return () => clearTimeout(timeout);
   }, [isStageRunning, currentStage, stageDefinitions, onComplete]);
 
@@ -791,101 +877,40 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
             )}
 
             {(isStageRunning || (!isStageRunning && stageCompleted && currentStage > 0)) && (
-            <div className="relative h-[calc(100%-80px)]">
-              {/* Animation Content - always visible but blurred when completed */}
-              <div className={clsx(
-                'h-full transition-all duration-500',
-                !isStageRunning && stageCompleted && 'blur-sm'
-              )}>
-            <AnimatePresence mode="wait" initial={false}>
-              {/* Operation */}
-              {phase.kind === 'operation' ? (
-                <motion.div
-                  key={`${step.id}-op`}
-                  initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 12 }}
-                  animate={reducedMotion ? { opacity: 1 } : { opacity: 1, y: 0 }}
-                  exit={reducedMotion ? { opacity: 1 } : { opacity: 0, y: -12 }}
-                  transition={{ duration: reducedMotion ? 0 : 0.35 }}
-                  className="h-full"
-                >
-                  <div className="h-full flex flex-col min-h-0">
-                    <div className="rounded-2xl border border-replit-border bg-replit-surface shadow-sm p-8 h-full overflow-hidden">
-                      {currentStage === 1 ? (
-                        <div className="h-full flex flex-col">
-                          {/* Thinking Panel */}
-                          <div className="flex-1 rounded-xl bg-replit-surface/35 p-6 pb-6 pt-2 min-h-0 flex flex-col">
-                            <div className="flex items-center gap-3 mb-3">
-                              <div className="text-lg font-semibold text-replit-text">AutoML Assistant</div>
-                              {isStageRunning && (
-                                <div className={reducedMotion ? 'grid grid-cols-3 gap-0.5 opacity-80' : 'grid grid-cols-3 gap-0.5 opacity-90'}>
-                                  {Array.from({ length: 9 }).map((_, i) => {
-                                    const colors = ['bg-replit-accent/60', 'bg-replit-success/50', 'bg-replit-warning/50'];
-                                    return (
-                                      <div
-                                        key={i}
-                                        className={
-                                          `h-2 w-2 rounded-[2px] ${colors[i % colors.length]} ` +
-                                          (reducedMotion ? '' : 'animate-[matrixPulse_900ms_ease-in-out_infinite]')
-                                        }
-                                        style={!reducedMotion ? { animationDelay: `${i * 70}ms` } : undefined}
-                                      />
-                                    );
-                                  })}
-                                </div>
-                              )}
-                            </div>
-
-                            <div
-                              ref={stage1ScrollRef}
-                              className="flex-1 overflow-auto rounded-lg bg-replit-surface/40 p-6 relative"
-                              style={{
-                                WebkitMaskImage:
-                                  'linear-gradient(to bottom, rgba(0,0,0,0.25) 0%, rgba(0,0,0,0.6) 10%, rgba(0,0,0,1) 32%, rgba(0,0,0,1) 100%)',
-                                maskImage:
-                                  'linear-gradient(to bottom, rgba(0,0,0,0.25) 0%, rgba(0,0,0,0.6) 10%, rgba(0,0,0,1) 32%, rgba(0,0,0,1) 100%)',
-                                WebkitMaskRepeat: 'no-repeat',
-                                maskRepeat: 'no-repeat',
-                                WebkitMaskSize: '100% 100%',
-                                maskSize: '100% 100%',
-                              }}
-                            >
-                              {stage1Thinking.length === 0 ? (
-                                <div className="flex items-center gap-3 text-replit-textMuted">
-                                  <div className={reducedMotion ? 'grid grid-cols-3 gap-0.5 opacity-80' : 'grid grid-cols-3 gap-0.5 opacity-90'}>
-                                    {Array.from({ length: 9 }).map((_, i) => {
-                                      const colors = ['bg-replit-accent/50', 'bg-replit-success/40', 'bg-replit-warning/40'];
-                                      return (
-                                        <div
-                                          key={i}
-                                          className={
-                                            `h-3 w-3 rounded-[2px] ${colors[i % colors.length]} ` +
-                                            (reducedMotion ? '' : 'animate-[matrixPulse_900ms_ease-in-out_infinite]')
-                                          }
-                                          style={!reducedMotion ? { animationDelay: `${i * 70}ms` } : undefined}
-                                        />
-                                      );
-                                    })}
-                                  </div>
-                                  <span className="text-base">Thinking...</span>
-                                </div>
-                              ) : (
-                                <div className="space-y-4">
-                                  {stage1Thinking.slice(-50).map((msg, idx) => (
-                                    <div key={`${idx}-${msg.slice(0, 20)}`} className="text-base leading-relaxed text-replit-text">
-                                      <span className="text-replit-accent font-medium">▸ </span>
-                                      {msg}
-                                    </div>
-                                  ))}
-                                  {isStageRunning && (
-                                    <div className="flex items-center gap-2 text-replit-textMuted">
+              <div className="relative h-[calc(100%-80px)]">
+                {/* Animation Content - always visible but blurred when completed */}
+                <div className={clsx(
+                  'h-full transition-all duration-500',
+                  !isStageRunning && stageCompleted && 'blur-sm'
+                )}>
+                  <AnimatePresence mode="wait" initial={false}>
+                    {/* Operation */}
+                    {phase.kind === 'operation' ? (
+                      <motion.div
+                        key={`${step.id}-op`}
+                        initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 12 }}
+                        animate={reducedMotion ? { opacity: 1 } : { opacity: 1, y: 0 }}
+                        exit={reducedMotion ? { opacity: 1 } : { opacity: 0, y: -12 }}
+                        transition={{ duration: reducedMotion ? 0 : 0.35 }}
+                        className="h-full"
+                      >
+                        <div className="h-full flex flex-col min-h-0">
+                          <div className="rounded-2xl border border-replit-border bg-replit-surface shadow-sm p-8 h-full overflow-hidden">
+                            {currentStage === 1 ? (
+                              <div className="h-full flex flex-col">
+                                {/* Thinking Panel */}
+                                <div className="flex-1 rounded-xl bg-replit-surface/35 p-6 pb-6 pt-2 min-h-0 flex flex-col">
+                                  <div className="flex items-center gap-3 mb-3">
+                                    <div className="text-lg font-semibold text-replit-text">AutoML Assistant</div>
+                                    {isStageRunning && (
                                       <div className={reducedMotion ? 'grid grid-cols-3 gap-0.5 opacity-80' : 'grid grid-cols-3 gap-0.5 opacity-90'}>
                                         {Array.from({ length: 9 }).map((_, i) => {
-                                          const colors = ['bg-replit-accent/50', 'bg-replit-success/40', 'bg-replit-warning/40'];
+                                          const colors = ['bg-replit-accent/60', 'bg-replit-success/50', 'bg-replit-warning/50'];
                                           return (
                                             <div
                                               key={i}
                                               className={
-                                                `h-2.5 w-2.5 rounded-[2px] ${colors[i % colors.length]} ` +
+                                                `h-2 w-2 rounded-[2px] ${colors[i % colors.length]} ` +
                                                 (reducedMotion ? '' : 'animate-[matrixPulse_900ms_ease-in-out_infinite]')
                                               }
                                               style={!reducedMotion ? { animationDelay: `${i * 70}ms` } : undefined}
@@ -893,455 +918,528 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
                                           );
                                         })}
                                       </div>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      ) : currentStage === 2 ? (
-                        <div className="h-full flex flex-col">
-                          {metricsState.datasetPreview?.dataType === 'image' ? (
-                            /* Stage 2: Image Vectorization Animation */
-                            <div className="flex-1 rounded-xl bg-replit-surface/35 p-6 min-h-0 flex flex-col">
-                              <div className="flex items-center justify-between mb-4">
-                                <div className="text-base font-semibold text-replit-text">Image Vectorization</div>
-                                <div className="text-xs text-replit-textMuted">20×20 pixels → 400-d vector</div>
-                              </div>
+                                    )}
+                                  </div>
 
-                              <div className="flex-1 overflow-hidden rounded-lg bg-replit-surface/40 p-4 relative">
-                                {(() => {
-                                  const totalDuration = step.durationMs;
-                                  const imageElapsed = imageAnimStartedAt === null ? 0 : Math.max(0, now - imageAnimStartedAt);
-                                  const animStage = imageElapsed < totalDuration * 0.2 ? 0
-                                    : imageElapsed < totalDuration * 0.45 ? 1
-                                    : imageElapsed < totalDuration * 0.7 ? 2
-                                    : 3;
-
-                                  const gridSize = 20;
-                                  const canvasSize = 280;
-                                  const canvasLeft = 40;
-                                  const canvasTop = 56;
-                                  const cellSize = canvasSize / gridSize;
-                                  const particleSize = 16;
-
-                                  const pixels = loadedImagePixels ?? [];
-                                  const hasPixels = pixels.length >= gridSize * gridSize;
-
-                                  const particles = hasPixels
-                                    ? pixels.slice(0, gridSize * gridSize).map((pixel, idx) => {
-                                        const gridX = idx % gridSize;
-                                        const gridY = Math.floor(idx / gridSize);
-                                        const startX = canvasLeft + gridX * cellSize + cellSize / 2 - particleSize / 2;
-                                        const startY = canvasTop + gridY * cellSize + cellSize / 2 - particleSize / 2;
-                                        return { ...pixel, gridX, gridY, startX, startY, idx };
-                                      })
-                                    : [];
-
-                                  const displayCount = 100;
-                                  const displayStart = Math.floor((particles.length - displayCount) / 2);
-
-                                  return (
-                                    <>
-                                      {/* Original Canvas */}
-                                      <div
-                                        className="absolute transition-all duration-[1500ms] ease-out"
-                                        style={{
-                                          left: `${canvasLeft}px`,
-                                          top: `${canvasTop}px`,
-                                          opacity: !hasPixels ? 0 : animStage >= 1 ? 0 : 1,
-                                          transform: animStage >= 1 ? 'scale(0.92)' : 'scale(1)',
-                                          filter: animStage >= 1 ? 'blur(10px)' : 'blur(0px)',
-                                        }}
-                                      >
-                                        <canvas
-                                          ref={imageCanvasRef}
-                                          width={canvasSize}
-                                          height={canvasSize}
-                                          className="border border-replit-border/70 rounded-xl bg-white/95 shadow-xl"
-                                        />
-                                        <div className="text-center mt-3 text-replit-textMuted font-medium text-xs">
-                                          Original Image
-                                        </div>
-                                      </div>
-
-                                      {!hasPixels && (
-                                        <div className="absolute inset-0 flex items-center justify-center">
-                                          <div className="text-sm text-replit-textMuted">Loading image…</div>
-                                        </div>
-                                      )}
-
-                                      {/* Stage Label */}
-                                      {animStage === 1 && (
-                                        <motion.div
-                                          initial={{ opacity: 0, y: -10 }}
-                                          animate={{ opacity: 1, y: 0 }}
-                                          className="absolute left-1/2 top-4 transform -translate-x-1/2 text-replit-text text-sm font-semibold"
-                                        >
-                                          Breaking into pixels...
-                                        </motion.div>
-                                      )}
-                                      {animStage === 2 && (
-                                        <motion.div
-                                          initial={{ opacity: 0 }}
-                                          animate={{ opacity: 1 }}
-                                          className="absolute left-64 top-64 text-replit-text text-xs font-medium bg-replit-surface/70 px-2 py-1 rounded"
-                                        >
-                                          Pixel Grid
-                                        </motion.div>
-                                      )}
-                                      {animStage === 3 && (
-                                        <>
-                                          <motion.div
-                                            initial={{ opacity: 0, y: -10 }}
-                                            animate={{ opacity: 1, y: 0 }}
-                                            className="absolute top-4 left-1/2 transform -translate-x-1/2 text-center"
-                                          >
-                                            <div className="text-replit-text text-sm font-semibold">Vector Representation</div>
-                                            <div className="text-replit-textMuted text-xs">RGB color vectors</div>
-                                          </motion.div>
-                                          <div className="absolute text-replit-accent text-6xl font-bold left-8 top-1/2 transform -translate-y-1/2">⟨</div>
-                                          <div className="absolute text-replit-accent text-6xl font-bold right-8 top-1/2 transform -translate-y-1/2">⟩</div>
-                                        </>
-                                      )}
-
-                                      {/* Particles */}
-                                      {hasPixels &&
-                                        particles.map((particle) => {
-                                        const getStyle = () => {
-                                          const color = `rgb(${particle.r}, ${particle.g}, ${particle.b})`;
-                                          const baseTransition = reducedMotion ? 'none' : 'all 1.5s cubic-bezier(0.23, 1, 0.32, 1)';
-
-                                          if (animStage === 0) {
-                                            return {
-                                              left: `${particle.startX}px`,
-                                              top: `${particle.startY}px`,
-                                              width: '16px',
-                                              height: '16px',
-                                              opacity: 0,
-                                              transform: 'scale(0)',
-                                            };
-                                          }
-
-                                          if (animStage === 1) {
-                                            return {
-                                              left: `${particle.startX}px`,
-                                              top: `${particle.startY}px`,
-                                              width: '16px',
-                                              height: '16px',
-                                              backgroundColor: color,
-                                              opacity: 1,
-                                              transform: 'scale(1)',
-                                              transition: baseTransition,
-                                              transitionDelay: `${particle.idx * 0.001}s`,
-                                            };
-                                          }
-
-                                          if (animStage === 2) {
-                                            const gridCellSize = 14;
-                                            return {
-                                              left: `${canvasLeft + 20 + particle.gridX * gridCellSize}px`,
-                                              top: `${canvasTop + 30 + particle.gridY * gridCellSize}px`,
-                                              width: `${gridCellSize - 1}px`,
-                                              height: `${gridCellSize - 1}px`,
-                                              backgroundColor: color,
-                                              opacity: 1,
-                                              transform: 'scale(1)',
-                                              transition: baseTransition,
-                                              transitionDelay: `${(particle.gridY * gridSize + particle.gridX) * 0.001}s`,
-                                            };
-                                          }
-
-                                          if (animStage === 3) {
-                                            const isVisible = particle.idx >= displayStart && particle.idx < displayStart + displayCount;
-                                            if (!isVisible) {
-                                              return { opacity: 0, transform: 'scale(0)' };
-                                            }
-
-                                            const relativeIdx = particle.idx - displayStart;
-                                            const itemsPerColumn = 20;
-                                            const columnIdx = Math.floor(relativeIdx / itemsPerColumn);
-                                            const rowIdx = relativeIdx % itemsPerColumn;
-                                            const vectorX = 100 + columnIdx * 220;
-                                            const vectorY = 60 + rowIdx * 28;
-
-                                            return {
-                                              left: `${vectorX}px`,
-                                              top: `${vectorY}px`,
-                                              opacity: 1,
-                                              transform: 'scale(1)',
-                                              transition: baseTransition,
-                                              transitionDelay: `${relativeIdx * 0.0015}s`,
-                                            };
-                                          }
-                                        };
-
-                                        const style = getStyle();
-                                        const isVectorStage = animStage === 3;
-                                        const isVisible = particle.idx >= displayStart && particle.idx < displayStart + displayCount;
-
-                                        return (
-                                          <div
-                                            key={particle.idx}
-                                            className="absolute will-change-transform"
-                                            style={{
-                                              ...style,
-                                              borderRadius: animStage === 2 ? '1px' : '3px',
-                                            }}
-                                          >
-                                            {isVectorStage && isVisible && (
-                                              <div className="flex items-center gap-2 px-3 py-1.5 bg-replit-surface/95 rounded border border-replit-border/60 shadow-lg">
-                                                <span className="text-replit-accent font-mono text-[10px] font-semibold min-w-[42px]">
-                                                  v[{particle.idx}]
-                                                </span>
-                                                <span className="text-replit-text font-mono text-[10px] font-bold">
-                                                  ({particle.r},{particle.g},{particle.b})
-                                                </span>
-                                                <div
-                                                  className="w-6 h-3 rounded"
-                                                  style={{
-                                                    backgroundColor: `rgb(${particle.r}, ${particle.g}, ${particle.b})`,
-                                                    border: '1px solid rgba(255,255,255,0.2)',
-                                                  }}
-                                                />
-                                              </div>
-                                            )}
-                                          </div>
-                                        );
-                                      })}
-
-                                      <div className="absolute bottom-4 left-4 text-xs text-replit-textMuted">
-                                        {imageElapsed < totalDuration * 0.2
-                                          ? 'Loading image...'
-                                          : imageElapsed < totalDuration * 0.45
-                                            ? 'Digitizing pixels...'
-                                            : imageElapsed < totalDuration * 0.7
-                                              ? 'Arranging grid...'
-                                              : 'Generating feature vectors...'}
-                                      </div>
-                                    </>
-                                  );
-                                })()}
-                              </div>
-                            </div>
-                          ) : (
-                            /* Stage 2: Tabular Data Preview with Progressive Row Loading */
-                            <div className="flex-1 rounded-xl bg-replit-surface/35 p-6 min-h-0 flex flex-col">
-                              <div className="flex items-center justify-between mb-4">
-                                <div className="text-base font-semibold text-replit-text">Data Preview</div>
-                                <div className="text-xs text-replit-textMuted">70,430 rows × 24 columns</div>
-                              </div>
-
-                              <div className="flex-1 overflow-hidden rounded-lg bg-replit-surface/40 p-4 md:p-6 flex flex-col min-h-0">
-                                <div className="text-xs text-replit-textMuted mb-3">Profiling schema and computing statistics</div>
-                                
-                                {/* Matrix Grid with Progressive Row Animation */}
-                                <div className="flex-1 min-h-0 flex items-center justify-center">
                                   <div
-                                    className="grid gap-px rounded-lg border border-replit-border/60 bg-replit-border/60 p-px overflow-hidden w-full h-full"
-                                    style={{ 
-                                      gridTemplateColumns: `repeat(${step.matrixCols ?? 6}, minmax(0, 1fr))`,
-                                      gridTemplateRows: `repeat(${step.matrixRows ?? 8}, minmax(0, 1fr))`
+                                    ref={stage1ScrollRef}
+                                    className="flex-1 overflow-auto rounded-lg bg-replit-surface/40 p-6 relative"
+                                    style={{
+                                      WebkitMaskImage:
+                                        'linear-gradient(to bottom, rgba(0,0,0,0.25) 0%, rgba(0,0,0,0.6) 10%, rgba(0,0,0,1) 32%, rgba(0,0,0,1) 100%)',
+                                      maskImage:
+                                        'linear-gradient(to bottom, rgba(0,0,0,0.25) 0%, rgba(0,0,0,0.6) 10%, rgba(0,0,0,1) 32%, rgba(0,0,0,1) 100%)',
+                                      WebkitMaskRepeat: 'no-repeat',
+                                      maskRepeat: 'no-repeat',
+                                      WebkitMaskSize: '100% 100%',
+                                      maskSize: '100% 100%',
                                     }}
                                   >
-                                    {Array.from({ length: (step.matrixRows ?? 8) * (step.matrixCols ?? 6) }).map((_, idx) => {
-                                      const cols = step.matrixCols ?? 6;
-                                      const r = Math.floor(idx / cols);
-                                      const c = idx % cols;
-                                      const previewData = metricsState.datasetPreview;
-                                      const display = previewData?.rows?.[r]?.[c] ?? 0;
+                                    {stage1Thinking.length === 0 ? (
+                                      <div className="flex items-center gap-3 text-replit-textMuted">
+                                        <div className={reducedMotion ? 'grid grid-cols-3 gap-0.5 opacity-80' : 'grid grid-cols-3 gap-0.5 opacity-90'}>
+                                          {Array.from({ length: 9 }).map((_, i) => {
+                                            const colors = ['bg-replit-accent/50', 'bg-replit-success/40', 'bg-replit-warning/40'];
+                                            return (
+                                              <div
+                                                key={i}
+                                                className={
+                                                  `h-3 w-3 rounded-[2px] ${colors[i % colors.length]} ` +
+                                                  (reducedMotion ? '' : 'animate-[matrixPulse_900ms_ease-in-out_infinite]')
+                                                }
+                                                style={!reducedMotion ? { animationDelay: `${i * 70}ms` } : undefined}
+                                              />
+                                            );
+                                          })}
+                                        </div>
+                                        <span className="text-base">Thinking...</span>
+                                      </div>
+                                    ) : (
+                                      <div className="space-y-4">
+                                        {stage1Thinking.slice(-50).map((msg, idx) => (
+                                          <div key={`${idx}-${msg.slice(0, 20)}`} className="text-base leading-relaxed text-replit-text">
+                                            <span className="text-replit-accent font-medium">▸ </span>
+                                            {msg}
+                                          </div>
+                                        ))}
+                                        {isStageRunning && (
+                                          <div className="flex items-center gap-2 text-replit-textMuted">
+                                            <div className={reducedMotion ? 'grid grid-cols-3 gap-0.5 opacity-80' : 'grid grid-cols-3 gap-0.5 opacity-90'}>
+                                              {Array.from({ length: 9 }).map((_, i) => {
+                                                const colors = ['bg-replit-accent/50', 'bg-replit-success/40', 'bg-replit-warning/40'];
+                                                return (
+                                                  <div
+                                                    key={i}
+                                                    className={
+                                                      `h-2.5 w-2.5 rounded-[2px] ${colors[i % colors.length]} ` +
+                                                      (reducedMotion ? '' : 'animate-[matrixPulse_900ms_ease-in-out_infinite]')
+                                                    }
+                                                    style={!reducedMotion ? { animationDelay: `${i * 70}ms` } : undefined}
+                                                  />
+                                                );
+                                              })}
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            ) : currentStage === 2 ? (
+                              <div className="h-full flex flex-col">
+                                {metricsState.datasetPreview?.dataType === 'image' ? (
+                                  /* Stage 2: Image Vectorization Animation */
+                                  <div className="flex-1 rounded-xl bg-replit-surface/35 p-6 min-h-0 flex flex-col">
+                                    <div className="flex items-center justify-between mb-4">
+                                      <div className="text-base font-semibold text-replit-text">Image Vectorization</div>
+                                      <div className="text-xs text-replit-textMuted">20×20 pixels → 400-d vector</div>
+                                    </div>
 
-                                      // Calculate which row should be visible based on time
-                                      const totalDuration = step.durationMs;
-                                      const rowDuration = totalDuration / (step.matrixRows ?? 8);
-                                      const rowStartTime = r * rowDuration;
-                                      const rowVisible = elapsed >= rowStartTime;
+                                    <div className="flex-1 overflow-hidden rounded-lg bg-replit-surface/40 p-4 relative">
+                                      {(() => {
+                                        const totalDuration = step.durationMs;
+                                        const imageElapsed = imageAnimStartedAt === null ? 0 : Math.max(0, now - imageAnimStartedAt);
+                                        const animStage = imageElapsed < totalDuration * 0.2 ? 0
+                                          : imageElapsed < totalDuration * 0.45 ? 1
+                                            : imageElapsed < totalDuration * 0.7 ? 2
+                                              : 3;
 
-                                      return (
-                                        <motion.div
-                                          key={idx}
-                                          initial={{ opacity: 0, y: 8 }}
-                                          animate={rowVisible ? { opacity: 1, y: 0 } : { opacity: 0, y: 8 }}
-                                          transition={{
-                                            duration: reducedMotion ? 0 : 0.4,
-                                            delay: reducedMotion ? 0 : c * 0.05,
-                                            ease: 'easeOut'
+                                        const gridSize = 20;
+                                        const canvasSize = 280;
+                                        const canvasLeft = 40;
+                                        const canvasTop = 56;
+                                        const cellSize = canvasSize / gridSize;
+                                        const particleSize = 16;
+
+                                        const pixels = loadedImagePixels ?? [];
+                                        const hasPixels = pixels.length >= gridSize * gridSize;
+
+                                        const particles = hasPixels
+                                          ? pixels.slice(0, gridSize * gridSize).map((pixel, idx) => {
+                                            const gridX = idx % gridSize;
+                                            const gridY = Math.floor(idx / gridSize);
+                                            const startX = canvasLeft + gridX * cellSize + cellSize / 2 - particleSize / 2;
+                                            const startY = canvasTop + gridY * cellSize + cellSize / 2 - particleSize / 2;
+                                            return { ...pixel, gridX, gridY, startX, startY, idx };
+                                          })
+                                          : [];
+
+                                        const displayCount = 100;
+                                        const displayStart = Math.floor((particles.length - displayCount) / 2);
+
+                                        return (
+                                          <>
+                                            {/* Original Canvas */}
+                                            <div
+                                              className="absolute transition-all duration-[1500ms] ease-out"
+                                              style={{
+                                                left: `${canvasLeft}px`,
+                                                top: `${canvasTop}px`,
+                                                opacity: !hasPixels ? 0 : animStage >= 1 ? 0 : 1,
+                                                transform: animStage >= 1 ? 'scale(0.92)' : 'scale(1)',
+                                                filter: animStage >= 1 ? 'blur(10px)' : 'blur(0px)',
+                                              }}
+                                            >
+                                              <canvas
+                                                ref={imageCanvasRef}
+                                                width={canvasSize}
+                                                height={canvasSize}
+                                                className="border border-replit-border/70 rounded-xl bg-white/95 shadow-xl"
+                                              />
+                                              <div className="text-center mt-3 text-replit-textMuted font-medium text-xs">
+                                                Original Image
+                                              </div>
+                                            </div>
+
+                                            {!hasPixels && (
+                                              <div className="absolute inset-0 flex items-center justify-center">
+                                                <div className="text-sm text-replit-textMuted">Loading image…</div>
+                                              </div>
+                                            )}
+
+                                            {/* Stage Label */}
+                                            {animStage === 1 && (
+                                              <motion.div
+                                                initial={{ opacity: 0, y: -10 }}
+                                                animate={{ opacity: 1, y: 0 }}
+                                                className="absolute left-1/2 top-4 transform -translate-x-1/2 text-replit-text text-sm font-semibold"
+                                              >
+                                                Breaking into pixels...
+                                              </motion.div>
+                                            )}
+                                            {animStage === 2 && (
+                                              <motion.div
+                                                initial={{ opacity: 0 }}
+                                                animate={{ opacity: 1 }}
+                                                className="absolute left-64 top-64 text-replit-text text-xs font-medium bg-replit-surface/70 px-2 py-1 rounded"
+                                              >
+                                                Pixel Grid
+                                              </motion.div>
+                                            )}
+                                            {animStage === 3 && (
+                                              <>
+                                                <motion.div
+                                                  initial={{ opacity: 0, y: -10 }}
+                                                  animate={{ opacity: 1, y: 0 }}
+                                                  className="absolute top-4 left-1/2 transform -translate-x-1/2 text-center"
+                                                >
+                                                  <div className="text-replit-text text-sm font-semibold">Vector Representation</div>
+                                                  <div className="text-replit-textMuted text-xs">RGB color vectors</div>
+                                                </motion.div>
+                                                <div className="absolute text-replit-accent text-6xl font-bold left-8 top-1/2 transform -translate-y-1/2">⟨</div>
+                                                <div className="absolute text-replit-accent text-6xl font-bold right-8 top-1/2 transform -translate-y-1/2">⟩</div>
+                                              </>
+                                            )}
+
+                                            {/* Particles */}
+                                            {hasPixels &&
+                                              particles.map((particle) => {
+                                                const getStyle = () => {
+                                                  const color = `rgb(${particle.r}, ${particle.g}, ${particle.b})`;
+                                                  const baseTransition = reducedMotion ? 'none' : 'all 1.5s cubic-bezier(0.23, 1, 0.32, 1)';
+
+                                                  if (animStage === 0) {
+                                                    return {
+                                                      left: `${particle.startX}px`,
+                                                      top: `${particle.startY}px`,
+                                                      width: '16px',
+                                                      height: '16px',
+                                                      opacity: 0,
+                                                      transform: 'scale(0)',
+                                                    };
+                                                  }
+
+                                                  if (animStage === 1) {
+                                                    return {
+                                                      left: `${particle.startX}px`,
+                                                      top: `${particle.startY}px`,
+                                                      width: '16px',
+                                                      height: '16px',
+                                                      backgroundColor: color,
+                                                      opacity: 1,
+                                                      transform: 'scale(1)',
+                                                      transition: baseTransition,
+                                                      transitionDelay: `${particle.idx * 0.001}s`,
+                                                    };
+                                                  }
+
+                                                  if (animStage === 2) {
+                                                    const gridCellSize = 14;
+                                                    return {
+                                                      left: `${canvasLeft + 20 + particle.gridX * gridCellSize}px`,
+                                                      top: `${canvasTop + 30 + particle.gridY * gridCellSize}px`,
+                                                      width: `${gridCellSize - 1}px`,
+                                                      height: `${gridCellSize - 1}px`,
+                                                      backgroundColor: color,
+                                                      opacity: 1,
+                                                      transform: 'scale(1)',
+                                                      transition: baseTransition,
+                                                      transitionDelay: `${(particle.gridY * gridSize + particle.gridX) * 0.001}s`,
+                                                    };
+                                                  }
+
+                                                  if (animStage === 3) {
+                                                    const isVisible = particle.idx >= displayStart && particle.idx < displayStart + displayCount;
+                                                    if (!isVisible) {
+                                                      return { opacity: 0, transform: 'scale(0)' };
+                                                    }
+
+                                                    const relativeIdx = particle.idx - displayStart;
+                                                    const itemsPerColumn = 20;
+                                                    const columnIdx = Math.floor(relativeIdx / itemsPerColumn);
+                                                    const rowIdx = relativeIdx % itemsPerColumn;
+                                                    const vectorX = 100 + columnIdx * 220;
+                                                    const vectorY = 60 + rowIdx * 28;
+
+                                                    return {
+                                                      left: `${vectorX}px`,
+                                                      top: `${vectorY}px`,
+                                                      opacity: 1,
+                                                      transform: 'scale(1)',
+                                                      transition: baseTransition,
+                                                      transitionDelay: `${relativeIdx * 0.0015}s`,
+                                                    };
+                                                  }
+                                                };
+
+                                                const style = getStyle();
+                                                const isVectorStage = animStage === 3;
+                                                const isVisible = particle.idx >= displayStart && particle.idx < displayStart + displayCount;
+
+                                                return (
+                                                  <div
+                                                    key={particle.idx}
+                                                    className="absolute will-change-transform"
+                                                    style={{
+                                                      ...style,
+                                                      borderRadius: animStage === 2 ? '1px' : '3px',
+                                                    }}
+                                                  >
+                                                    {isVectorStage && isVisible && (
+                                                      <div className="flex items-center gap-2 px-3 py-1.5 bg-replit-surface/95 rounded border border-replit-border/60 shadow-lg">
+                                                        <span className="text-replit-accent font-mono text-[10px] font-semibold min-w-[42px]">
+                                                          v[{particle.idx}]
+                                                        </span>
+                                                        <span className="text-replit-text font-mono text-[10px] font-bold">
+                                                          ({particle.r},{particle.g},{particle.b})
+                                                        </span>
+                                                        <div
+                                                          className="w-6 h-3 rounded"
+                                                          style={{
+                                                            backgroundColor: `rgb(${particle.r}, ${particle.g}, ${particle.b})`,
+                                                            border: '1px solid rgba(255,255,255,0.2)',
+                                                          }}
+                                                        />
+                                                      </div>
+                                                    )}
+                                                  </div>
+                                                );
+                                              })}
+
+                                            <div className="absolute bottom-4 left-4 text-xs text-replit-textMuted">
+                                              {imageElapsed < totalDuration * 0.2
+                                                ? 'Loading image...'
+                                                : imageElapsed < totalDuration * 0.45
+                                                  ? 'Digitizing pixels...'
+                                                  : imageElapsed < totalDuration * 0.7
+                                                    ? 'Arranging grid...'
+                                                    : 'Generating feature vectors...'}
+                                            </div>
+                                          </>
+                                        );
+                                      })()}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  /* Stage 2: Tabular Data Preview with Progressive Row Loading */
+                                  <div className="flex-1 rounded-xl bg-replit-surface/35 p-6 min-h-0 flex flex-col">
+                                    <div className="flex items-center justify-between mb-4">
+                                      <div className="text-base font-semibold text-replit-text">Data Preview</div>
+                                      <div className="text-xs text-replit-textMuted">
+                                        {metricsState.datasetPreview?.nRows?.toLocaleString() ?? 0} rows × {metricsState.datasetPreview?.columns?.length ?? 0} columns
+                                      </div>
+                                    </div>
+
+                                    <div className="flex-1 overflow-hidden rounded-lg bg-replit-surface/40 p-4 md:p-6 flex flex-col min-h-0">
+                                      <div className="text-xs text-replit-textMuted mb-3">Profiling schema and computing statistics</div>
+
+                                      {/* Matrix Grid with Progressive Row Animation */}
+                                      <div className="flex-1 min-h-0 flex items-center justify-center">
+                                        <div
+                                          className="grid gap-px rounded-lg border border-replit-border/60 bg-replit-border/60 p-px overflow-hidden w-full h-full"
+                                          style={{
+                                            gridTemplateColumns: `repeat(${step.matrixCols ?? 6}, minmax(0, 1fr))`,
+                                            gridTemplateRows: `repeat(${step.matrixRows ?? 8}, minmax(0, 1fr))`
                                           }}
-                                          className="flex items-center justify-center font-mono select-none text-xs md:text-sm bg-replit-surface/40 text-replit-text min-h-0"
                                         >
-                                          {typeof display === 'number' ? display.toFixed(2) : display}
-                                        </motion.div>
-                                      );
-                                    })}
+                                          {Array.from({ length: (step.matrixRows ?? 8) * (step.matrixCols ?? 6) }).map((_, idx) => {
+                                            const cols = step.matrixCols ?? 6;
+                                            const r = Math.floor(idx / cols);
+                                            const c = idx % cols;
+                                            const previewData = metricsState.datasetPreview;
+
+                                            // Get the actual row object and column name
+                                            const rowData = previewData?.rows?.[r];
+                                            const columnNames = previewData?.columns ?? [];
+                                            const columnName = columnNames[c];
+
+                                            // Access the value using the column name from the row object
+                                            let display: any = 0;
+                                            if (rowData && columnName && typeof rowData === 'object') {
+                                              display = rowData[columnName] ?? 0;
+                                            }
+
+                                            // Calculate which row should be visible based on time
+                                            const totalDuration = step.durationMs;
+                                            const rowDuration = totalDuration / (step.matrixRows ?? 8);
+                                            const rowStartTime = r * rowDuration;
+                                            const rowVisible = elapsed >= rowStartTime;
+
+                                            return (
+                                              <motion.div
+                                                key={idx}
+                                                initial={{ opacity: 0, y: 8 }}
+                                                animate={rowVisible ? { opacity: 1, y: 0 } : { opacity: 0, y: 8 }}
+                                                transition={{
+                                                  duration: reducedMotion ? 0 : 0.4,
+                                                  delay: reducedMotion ? 0 : c * 0.05,
+                                                  ease: 'easeOut'
+                                                }}
+                                                className="flex items-center justify-center font-mono select-none text-xs md:text-sm bg-replit-surface/40 text-replit-text min-h-0"
+                                              >
+                                                {typeof display === 'number' ? display.toFixed(2) : display}
+                                              </motion.div>
+                                            );
+                                          })}
+                                        </div>
+                                      </div>
+
+                                      <div className="mt-3 text-xs text-replit-textMuted">
+                                        {elapsed < step.durationMs * 0.3
+                                          ? 'Scanning columns and detecting types...'
+                                          : elapsed < step.durationMs * 0.7
+                                            ? 'Computing missingness and distributions...'
+                                            : 'Finalizing schema profile...'}
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <>
+                                <div className="text-xs text-replit-textMuted mb-4">Operation</div>
+
+                                <div className="mb-5 rounded-xl border border-replit-border/60 bg-replit-surface/35 p-4">
+                                  <div className="text-[11px] text-replit-textMuted mb-2">Formula</div>
+                                  <div className="text-replit-text overflow-hidden">
+                                    <div className="flex justify-center">
+                                      <div className="origin-center scale-[1.02] md:scale-[1.08]">
+                                        <BlockMath math={step.equations?.[0] ?? ''} />
+                                      </div>
+                                    </div>
                                   </div>
                                 </div>
 
-                                <div className="mt-3 text-xs text-replit-textMuted">
-                                  {elapsed < step.durationMs * 0.3
-                                    ? 'Scanning columns and detecting types...'
-                                    : elapsed < step.durationMs * 0.7
-                                      ? 'Computing missingness and distributions...'
-                                      : 'Finalizing schema profile...'}
+                                <div className="mx-auto max-w-5xl">
+                                  <MatrixGrid
+                                    label={step.matrixLabel ?? 'X'}
+                                    rows={step.matrixRows ?? 6}
+                                    cols={step.matrixCols ?? 8}
+                                    timeMs={now}
+                                    reducedMotion={reducedMotion}
+                                  />
                                 </div>
-                              </div>
-                            </div>
-                          )}
+
+                                <div className="mt-6 text-xs text-replit-textMuted">
+                                  {phaseProgress < 0.33
+                                    ? 'Multiplying (row ├ù column)ΓÇª'
+                                    : phaseProgress < 0.66
+                                      ? 'Accumulating partial sumsΓÇª'
+                                      : 'Writing the next tensorΓÇª'}
+                                </div>
+                              </>
+                            )}
+                          </div>
                         </div>
-                      ) : (
-                        <>
-                          <div className="text-xs text-replit-textMuted mb-4">Operation</div>
+                      </motion.div>
+                    ) : null}
 
-                          <div className="mb-5 rounded-xl border border-replit-border/60 bg-replit-surface/35 p-4">
-                            <div className="text-[11px] text-replit-textMuted mb-2">Formula</div>
-                            <div className="text-replit-text overflow-hidden">
-                              <div className="flex justify-center">
-                                <div className="origin-center scale-[1.02] md:scale-[1.08]">
-                                  <BlockMath math={step.equations?.[0] ?? ''} />
-                                </div>
-                              </div>
+                    {/* Graph */}
+                    {phase.kind === 'graph' ? (
+                      <motion.div
+                        key={`${step.id}-graph-${phase.graphType}`}
+                        initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 12 }}
+                        animate={reducedMotion ? { opacity: 1 } : { opacity: 1, y: 0 }}
+                        exit={reducedMotion ? { opacity: 1 } : { opacity: 0, y: -12 }}
+                        transition={{ duration: reducedMotion ? 0 : 0.35 }}
+                        className="h-full"
+                      >
+                        <div className="h-full flex flex-col min-h-0">
+                          <div className="rounded-2xl border border-replit-border bg-replit-surface shadow-sm p-8 h-full overflow-hidden">
+                            {phase.graphType === 'loss' ? (
+                              <TrainingLossVisualizer
+                                data={lossVisible.map((p) => ({ epoch: p.epoch, train_loss: p.train_loss, val_loss: p.val_loss }))}
+                              />
+                            ) : (
+                              <ModelMetricsVisualizer
+                                metricKind={metricKind}
+                                data={mapMetricSeries(accVisible, metricKind)}
+                              />
+                            )}
+                            <div className="mt-6 text-xs text-replit-textMuted">
+                              {phase.graphType === 'loss'
+                                ? 'Plotting loss curveΓÇª'
+                                : useRmse
+                                  ? 'Plotting RMSE curveΓÇª'
+                                  : 'Plotting accuracy curveΓÇª'}
                             </div>
                           </div>
+                        </div>
+                      </motion.div>
+                    ) : null}
 
-                          <div className="mx-auto max-w-5xl">
-                            <MatrixGrid
-                              label={step.matrixLabel ?? 'X'}
-                              rows={step.matrixRows ?? 6}
-                              cols={step.matrixCols ?? 8}
-                              timeMs={now}
-                              reducedMotion={reducedMotion}
-                            />
+                    {/* Visual */}
+                    {phase.kind === 'visual' ? (
+                      <motion.div
+                        key={`${step.id}-visual-${phase.visualId}`}
+                        initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 12 }}
+                        animate={reducedMotion ? { opacity: 1 } : { opacity: 1, y: 0 }}
+                        exit={reducedMotion ? { opacity: 1 } : { opacity: 0, y: -12 }}
+                        transition={{ duration: reducedMotion ? 0 : 0.35 }}
+                        className="h-full"
+                      >
+                        <div className="h-full flex flex-col min-h-0">
+                          <div className={clsx(
+                            'rounded-2xl border border-replit-border bg-replit-surface shadow-sm p-8 h-full overflow-hidden',
+                            phase.visualId === 'neuralNetForward' && 'pb-[50px]'
+                          )}>
+                            <div className="text-xs text-replit-textMuted mb-4">{phaseTitle(phase)}</div>
+                            {(() => {
+                              const C = VISUALS[phase.visualId as VisualId];
+                              return (
+                                <C
+                                  timeMs={now}
+                                  phaseProgress={phaseProgress}
+                                  seed={stepSeed}
+                                  reducedMotion={reducedMotion}
+                                  writeArtifact={phase.visualId === 'evaluation' ? writeArtifact : undefined}
+                                  confusion={
+                                    phase.visualId === 'evaluation' && scenarioConfig.showConfusionMatrix
+                                      ? metricsState.confusionTable ?? undefined
+                                      : undefined
+                                  }
+                                  metrics={phase.visualId === 'evaluation' ? evaluationMetrics : undefined}
+                                  showConfusion={
+                                    phase.visualId === 'evaluation'
+                                      ? scenarioConfig.showConfusionMatrix && (metricsState.confusionTable?.length ?? 0) <= 2
+                                      : undefined
+                                  }
+                                  points={
+                                    phase.visualId === 'embeddingScatter' && scenarioConfig.showEmbedding
+                                      ? metricsState.embeddingPoints
+                                      : undefined
+                                  }
+                                  path={phase.visualId === 'gradDescent' ? metricsState.gradientPath : undefined}
+                                  surfaceSpec={phase.visualId === 'gradDescent' ? metricsState.surfaceSpec : undefined}
+                                  residuals={phase.visualId === 'residuals' ? metricsState.residuals : undefined}
+                                />
+                              );
+                            })()}
                           </div>
-
-                          <div className="mt-6 text-xs text-replit-textMuted">
-                            {phaseProgress < 0.33
-                              ? 'Multiplying (row ├ù column)ΓÇª'
-                              : phaseProgress < 0.66
-                                ? 'Accumulating partial sumsΓÇª'
-                                : 'Writing the next tensorΓÇª'}
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                </motion.div>
-              ) : null}
-
-              {/* Graph */}
-              {phase.kind === 'graph' ? (
-                <motion.div
-                  key={`${step.id}-graph-${phase.graphType}`}
-                  initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 12 }}
-                  animate={reducedMotion ? { opacity: 1 } : { opacity: 1, y: 0 }}
-                  exit={reducedMotion ? { opacity: 1 } : { opacity: 0, y: -12 }}
-                  transition={{ duration: reducedMotion ? 0 : 0.35 }}
-                  className="h-full"
-                >
-                  <div className="h-full flex flex-col min-h-0">
-                    <div className="rounded-2xl border border-replit-border bg-replit-surface shadow-sm p-8 h-full overflow-hidden">
-                      {phase.graphType === 'loss' ? (
-                        <TrainingLossVisualizer
-                          data={lossVisible.map((p) => ({ epoch: p.epoch, train_loss: p.train_loss, val_loss: p.val_loss }))}
-                        />
-                      ) : (
-                        <ModelMetricsVisualizer
-                          metricKind={metricKind}
-                          data={mapMetricSeries(accVisible, metricKind)}
-                        />
-                      )}
-                      <div className="mt-6 text-xs text-replit-textMuted">
-                        {phase.graphType === 'loss'
-                          ? 'Plotting loss curveΓÇª'
-                          : useRmse
-                            ? 'Plotting RMSE curveΓÇª'
-                            : 'Plotting accuracy curveΓÇª'}
-                      </div>
-                    </div>
-                  </div>
-                </motion.div>
-              ) : null}
-
-              {/* Visual */}
-              {phase.kind === 'visual' ? (
-                <motion.div
-                  key={`${step.id}-visual-${phase.visualId}`}
-                  initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 12 }}
-                  animate={reducedMotion ? { opacity: 1 } : { opacity: 1, y: 0 }}
-                  exit={reducedMotion ? { opacity: 1 } : { opacity: 0, y: -12 }}
-                  transition={{ duration: reducedMotion ? 0 : 0.35 }}
-                  className="h-full"
-                >
-                  <div className="h-full flex flex-col min-h-0">
-                    <div className={clsx(
-                      'rounded-2xl border border-replit-border bg-replit-surface shadow-sm p-8 h-full overflow-hidden',
-                      phase.visualId === 'neuralNetForward' && 'pb-[50px]'
-                    )}>
-                      <div className="text-xs text-replit-textMuted mb-4">{phaseTitle(phase)}</div>
-                      {(() => {
-                        const C = VISUALS[phase.visualId as VisualId];
-                        return (
-                          <C
-                            timeMs={now}
-                            phaseProgress={phaseProgress}
-                            seed={stepSeed}
-                            reducedMotion={reducedMotion}
-                            writeArtifact={phase.visualId === 'evaluation' ? writeArtifact : undefined}
-                            confusion={
-                              phase.visualId === 'evaluation' && scenarioConfig.showConfusionMatrix
-                                ? metricsState.confusionTable ?? undefined
-                                : undefined
-                            }
-                            metrics={phase.visualId === 'evaluation' ? evaluationMetrics : undefined}
-                            showConfusion={
-                              phase.visualId === 'evaluation'
-                                ? scenarioConfig.showConfusionMatrix && (metricsState.confusionTable?.length ?? 0) <= 2
-                                : undefined
-                            }
-                            points={
-                              phase.visualId === 'embeddingScatter' && scenarioConfig.showEmbedding
-                                ? metricsState.embeddingPoints
-                                : undefined
-                            }
-                            path={phase.visualId === 'gradDescent' ? metricsState.gradientPath : undefined}
-                            surfaceSpec={phase.visualId === 'gradDescent' ? metricsState.surfaceSpec : undefined}
-                            residuals={phase.visualId === 'residuals' ? metricsState.residuals : undefined}
-                          />
-                        );
-                      })()}
-                    </div>
-                  </div>
-                </motion.div>
-              ) : null}
-            </AnimatePresence>
-            </div>
-
-            {/* Completion Overlay - shown on top of blurred animation */}
-            {!isStageRunning && stageCompleted && currentStage > 0 && (
-              <motion.div
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.9 }}
-                transition={{ duration: 0.3 }}
-                className="absolute inset-0 flex items-center justify-center pointer-events-none"
-              >
-                <div className="text-center max-w-2xl bg-replit-surface/95 backdrop-blur-md rounded-2xl border border-replit-border shadow-2xl p-8 pointer-events-auto">
-                  <div className="text-6xl mb-6 text-green-500">✓</div>
-                  <h2 className="text-2xl font-bold text-replit-text mb-3">
-                    {currentStage === 4 && showChangeOption ? 'Ready for Next Steps' : 'Stage Completed!'}
-                  </h2>
-                  {currentStage === 4 && showChangeOption ? (
-                    <p className="text-replit-textMuted mb-6">
-                      Would you like to make any changes to your model, or proceed to deployment?
-                    </p>
-                  ) : (
-                    <p className="text-replit-textMuted mb-6">
-                      Click 'Proceed' to continue to the next stage.
-                    </p>
-                  )}
+                        </div>
+                      </motion.div>
+                    ) : null}
+                  </AnimatePresence>
                 </div>
-              </motion.div>
-            )}
-            </div>
+
+                {/* Completion Overlay - shown on top of blurred animation */}
+                {!isStageRunning && stageCompleted && currentStage > 0 && (
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.9 }}
+                    transition={{ duration: 0.3 }}
+                    className="absolute inset-0 flex items-center justify-center pointer-events-none"
+                  >
+                    <div className="text-center max-w-2xl bg-replit-surface/95 backdrop-blur-md rounded-2xl border border-replit-border shadow-2xl p-8 pointer-events-auto">
+                      <div className="text-6xl mb-6 text-green-500">✓</div>
+                      <h2 className="text-2xl font-bold text-replit-text mb-3">
+                        {currentStage === 4 && showChangeOption ? 'Ready for Next Steps' : 'Stage Completed!'}
+                      </h2>
+                      {currentStage === 4 && showChangeOption ? (
+                        <p className="text-replit-textMuted mb-6">
+                          Would you like to make any changes to your model, or proceed to deployment?
+                        </p>
+                      ) : (
+                        <p className="text-replit-textMuted mb-6">
+                          Click 'Proceed' to continue to the next stage.
+                        </p>
+                      )}
+                    </div>
+                  </motion.div>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -1381,7 +1479,7 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
                         ) : null}
                       </div>
                       {idx < fixedNodes.length - 1 && (
-                        <div 
+                        <div
                           className={clsx(
                             'h-1 w-16 -mx-px transition-all duration-500',
                             isDone ? 'bg-replit-success/80' : 'bg-replit-border/60'

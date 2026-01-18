@@ -5,6 +5,7 @@ import EmptyPreview from './preview/EmptyPreview';
 import TrainingLoaderV2 from './preview/TrainingLoaderV2';
 import APIDocsPane from './preview/APIDocsPane';
 import type { BuildStatus } from '../../lib/buildSession';
+import ErrorBoundary from '../ErrorBoundary';
 
 interface PreviewPaneProps {
   files: FileSystemNode[];
@@ -15,9 +16,9 @@ interface PreviewPaneProps {
   sessionStatus: BuildStatus;
 }
 
-export default function PreviewPane({ 
-  files, 
-  isRunning, 
+export default function PreviewPane({
+  files,
+  isRunning,
   onSimulationComplete,
   updateFileContent,
   hasSession,
@@ -46,8 +47,8 @@ export default function PreviewPane({
   }
 
   const handleComplete = () => {
-      setCompleted(true);
-      onSimulationComplete();
+    setCompleted(true);
+    onSimulationComplete();
   };
 
   return (
@@ -61,8 +62,8 @@ export default function PreviewPane({
           <button className="p-1.5 hover:bg-replit-surfaceHover rounded transition-colors" disabled>
             <ArrowRight className="w-4 h-4 text-replit-textMuted" />
           </button>
-          <button 
-            className="p-1.5 hover:bg-replit-surfaceHover rounded transition-colors" 
+          <button
+            className="p-1.5 hover:bg-replit-surfaceHover rounded transition-colors"
             onClick={() => window.location.reload()}
           >
             <RotateCw className="w-4 h-4 text-replit-text" />
@@ -71,9 +72,9 @@ export default function PreviewPane({
 
         <div className="flex-1 flex items-center gap-2 px-3 py-1.5 bg-replit-bg/40 backdrop-blur rounded border border-replit-border/70 mx-2">
           <span className="text-xs text-replit-textMuted font-mono truncate flex-1">
-             {viewState === 'processing' ? 'https://cluster.ai-builder.dev/jobs/run_8392' : 
-              viewState === 'docs' ? 'https://api.ai-builder.dev/v1/docs' : 
-              'about:blank'}
+            {viewState === 'processing' ? 'https://cluster.ai-builder.dev/jobs/run_8392' :
+              viewState === 'docs' ? 'https://api.ai-builder.dev/v1/docs' :
+                'about:blank'}
           </span>
           <ExternalLink className="w-3 h-3 text-replit-textMuted" />
         </div>
@@ -81,14 +82,17 @@ export default function PreviewPane({
 
       {/* Content Area */}
       <div className="flex-1 overflow-hidden relative">
-         {viewState === 'empty' && <EmptyPreview />}
-         {viewState === 'processing' && (
-          <TrainingLoaderV2 
-                onComplete={handleComplete} 
-                updateFileContent={updateFileContent} 
+        {viewState === 'empty' && <EmptyPreview />}
+        {viewState === 'processing' && (
+          <ErrorBoundary>
+            <TrainingLoaderV2
+              onComplete={handleComplete}
+              updateFileContent={updateFileContent}
+              
             />
-         )}
-         {viewState === 'docs' && <APIDocsPane files={files} />}
+          </ErrorBoundary>
+        )}
+        {viewState === 'docs' && <APIDocsPane files={files} />}
       </div>
     </div>
   );

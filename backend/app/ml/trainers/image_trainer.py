@@ -174,6 +174,8 @@ class ImageTrainer:
                     loss.backward()
                     optimizer.step()
                     step += 1
+                    
+                    # Emit training progress
                     await self._emit(
                         EventType.TRAIN_PROGRESS,
                         {
@@ -186,6 +188,22 @@ class ImageTrainer:
                             "phase": "fit",
                         },
                     )
+                    
+                    # Emit METRIC_SCALAR for loss (REAL value from PyTorch)
+                    await self._emit(
+                        EventType.METRIC_SCALAR,
+                        {
+                            "run_id": self.run_id,
+                            "name": "loss",
+                            "split": "train",
+                            "step": step,
+                            "value": float(loss.item()),
+                        },
+                    )
+                    
+                    # Small delay to allow frontend to process
+                    await asyncio.sleep(0.05)
+                    
                     if step >= total_steps:
                         break
                 if step >= total_steps:
@@ -256,11 +274,13 @@ class ImageTrainer:
 
         model.compile(optimizer="adam", loss="binary_crossentropy", metrics=["accuracy"])
 
-        # Hook to stream progress
+        # Hook to stream progress and metrics
         step_counter = {"step": 0}
 
         def on_batch_end(batch, logs=None):
             step_counter["step"] += 1
+            
+            # Emit progress
             asyncio.run(
                 self._emit(
                     EventType.TRAIN_PROGRESS,
@@ -275,6 +295,36 @@ class ImageTrainer:
                     },
                 )
             )
+            
+            # Emit METRIC_SCALAR for loss if available (REAL value from TensorFlow)
+            if logs and "loss" in logs:
+                asyncio.run(
+                    self._emit(
+                        EventType.METRIC_SCALAR,
+                        {
+                            "run_id": self.run_id,
+                            "name": "loss",
+                            "split": "train",
+                            "step": step_counter["step"],
+                            "value": float(logs["loss"]),
+                        },
+                    )
+                )
+            
+            # Emit accuracy if available
+            if logs and "accuracy" in logs:
+                asyncio.run(
+                    self._emit(
+                        EventType.METRIC_SCALAR,
+                        {
+                            "run_id": self.run_id,
+                            "name": "accuracy",
+                            "split": "train",
+                            "step": step_counter["step"],
+                            "value": float(logs["accuracy"]),
+                        },
+                    )
+                )
 
         cb = tf.keras.callbacks.LambdaCallback(on_batch_end=on_batch_end)
         model.fit(train_ds, validation_data=val_ds, epochs=self.config.epochs, callbacks=[cb])

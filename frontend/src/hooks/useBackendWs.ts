@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from 'react';
 import type { ConnectionStatus, EventEnvelope } from '../lib/ws';
 import { createWebSocketClient } from '../lib/ws';
 
+const DEFAULT_PROJECT_ID =
+  (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_PROJECT_ID) || 'demo';
+
 type UseBackendWsOptions = {
   projectId?: string;
   baseUrl?: string;
@@ -16,7 +19,7 @@ const formatLine = (evt: EventEnvelope) => {
 };
 
 export function useBackendWs(options?: UseBackendWsOptions) {
-  const { projectId = 'demo-project', baseUrl } = options ?? {};
+  const { projectId = DEFAULT_PROJECT_ID, baseUrl } = options ?? {};
 
   const [status, setStatus] = useState<ConnectionStatus>('idle');
   const [events, setEvents] = useState<EventEnvelope[]>([]);

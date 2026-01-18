@@ -1,173 +1,194 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import type {
-  ArtifactAddedPayload,
-  DatasetSampleReadyPayload,
-  LogLinePayload,
-  MetricScalarPayload,
-  EventType,
-  StageID,
-} from '../lib/contract';
-import type { EventEnvelope } from '../lib/ws';
-import { useProjectStore } from '../store/projectStore';
-import type { MetricsState } from '../mock/useMockAutoMLStream';
+import { useEffect, useReducer, useCallback, useRef } from 'react';
 
-const emptyMetrics: MetricsState = {
-  lossSeries: [],
-  accSeries: [],
-  f1Series: [],
-  rmseSeries: [],
-  confusionTable: null,
-  embeddingPoints: [],
-  gradientPath: [],
-  residuals: [],
-  surfaceSpec: null,
-  pipelineGraph: null,
-  leaderboard: [],
-  metricsSummary: {},
-  thinkingByStage: {},
-  datasetPreview: null,
-};
+const WS_BASE = import.meta.env.VITE_WS_BASE || 'ws://localhost:8000';
 
-export function useLiveMetrics() {
-  const events = useProjectStore((s) => s.events);
-  const [metricsState, setMetricsState] = useState<MetricsState>(emptyMetrics);
-  const assetMetaRef = useRef(new Map<string, Record<string, unknown>>());
-
-  const latestByType = useMemo(() => {
-    const map = new Map<string, EventEnvelope>();
-    for (const evt of events) {
-      const key = evt.event?.name ?? evt.type ?? 'EVENT';
-      map.set(key, evt);
-    }
-    return map;
-  }, [events]);
-
-  useEffect(() => {
-    // Reduce all events into metrics state
-    let next = metricsState;
-    for (const evt of events.slice(metricsState.lossSeries.length ? 0 : 0)) {
-      next = reduceMetrics(next, evt, assetMetaRef.current);
-    }
-    setMetricsState(next);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events]);
-
-  return { metricsState, latestByType };
+interface WSEvent {
+  type: string;
+  [key: string]: unknown;
 }
 
-function reduceMetrics(prev: MetricsState, evt: EventEnvelope, assetMeta: Map<string, Record<string, unknown>>): MetricsState {
-  const name = evt.event?.name as EventType | undefined;
-  const payload = evt.event?.payload as Record<string, unknown> | undefined;
+interface MetricsState {
+  events: WSEvent[];
+  metrics: Record<string, number>[];
+  gradients: { epoch: number; layer: string; mean: number; std: number }[];
+  embeddings: { x: number; y: number; label: string }[];
+  confusionMatrix: number[][] | null;
+  featureImportances: { feature: string; importance: number }[] | null;
+  previewImages: string[];
+  isConnected: boolean;
+  connectionError: string | null;
+}
 
-  if (name === 'ARTIFACT_ADDED') {
-    const artifactPayload = payload as ArtifactAddedPayload | undefined;
-    const artifact = artifactPayload?.artifact;
-    if (artifact?.meta) {
-      assetMeta.set(artifact.url || artifact.id, artifact.meta as Record<string, unknown>);
-      const meta = artifact.meta as Record<string, unknown>;
-      if (meta.kind === 'loss_surface' && meta.spec) return { ...prev, surfaceSpec: meta.spec as any };
-      if (meta.kind === 'gradient_path' && meta.points) return { ...prev, gradientPath: meta.points as any };
-      if (meta.kind === 'embedding_points' && meta.points) return { ...prev, embeddingPoints: meta.points as any };
-      if (meta.kind === 'residuals' && meta.points) return { ...prev, residuals: meta.points as any };
-      if (meta.kind === 'pipeline_graph' && meta.graph) return { ...prev, pipelineGraph: meta.graph as any };
-      if (meta.kind === 'confusion_matrix' && meta.matrix) return { ...prev, confusionTable: meta.matrix as number[][] };
-      if (meta.kind === 'feature_importance' && meta.ranking) {
-        return { ...prev, leaderboard: [{ rank: 1, model: 'Top Features', metricName: 'importance', metricValue: 1, params: { ranking: meta.ranking } }] };
-      }
-    }
-  }
+type Action =
+  | { type: 'WS_OPEN' }
+  | { type: 'WS_CLOSE' }
+  | { type: 'WS_ERROR'; error: string }
+  | { type: 'WS_MESSAGE'; event: WSEvent }
+  | { type: 'RESET' };
 
-  switch (name) {
-    case 'LOG_LINE': {
-      const text = (payload as LogLinePayload | undefined)?.text ?? '';
-      const prefix = 'THINKING:';
-      if (!text.startsWith(prefix)) return prev;
-      const stage = evt.stage?.id as StageID | undefined;
-      if (!stage) return prev;
-      const msg = text.slice(prefix.length).trim();
-      const existing = prev.thinkingByStage[stage] ?? [];
-      return { ...prev, thinkingByStage: { ...prev.thinkingByStage, [stage]: [...existing, msg].slice(-200) } };
-    }
-    case 'METRIC_SCALAR': {
-      const m = payload as MetricScalarPayload | undefined;
-      if (!m) return prev;
-      const epoch = m.step;
-      if (m.name === 'loss' || m.name === 'train_loss' || m.name === 'val_loss') {
-        const existing = prev.lossSeries.find((p) => p.epoch === epoch);
-        const nextPoint = existing
-          ? {
-              ...existing,
-              train_loss: m.split === 'train' ? m.value : existing.train_loss,
-              val_loss: m.split === 'val' ? m.value : existing.val_loss,
-            }
-          : { epoch, train_loss: m.split === 'train' ? m.value : m.value, val_loss: m.split === 'val' ? m.value : m.value };
-        const lossSeries = [...prev.lossSeries.filter((p) => p.epoch !== epoch), nextPoint].sort((a, b) => a.epoch - b.epoch);
-        return { ...prev, lossSeries };
-      }
-      if (m.name === 'accuracy') {
-        const accSeries = [...prev.accSeries.filter((p) => p.epoch !== epoch), { epoch, value: m.value }].sort((a, b) => a.epoch - b.epoch);
-        return { ...prev, accSeries, metricsSummary: { ...prev.metricsSummary, accuracy: m.value } };
-      }
-      if (m.name === 'f1') {
-        const f1Series = [...prev.f1Series.filter((p) => p.epoch !== epoch), { epoch, value: m.value }].sort((a, b) => a.epoch - b.epoch);
-        return { ...prev, f1Series, metricsSummary: { ...prev.metricsSummary, f1: m.value } };
-      }
-      if (m.name === 'rmse') {
-        const rmseSeries = [...prev.rmseSeries.filter((p) => p.epoch !== epoch), { epoch, value: m.value }].sort((a, b) => a.epoch - b.epoch);
-        return { ...prev, rmseSeries, metricsSummary: { ...prev.metricsSummary, rmse: m.value } };
-      }
-      return prev;
-    }
-    case 'DATASET_SAMPLE_READY': {
-      const sample = payload as DatasetSampleReadyPayload | any;
-      if (sample?.images) {
-        return {
-          ...prev,
-          datasetPreview: { rows: [], columns: [], dataType: 'image', imageData: { width: 0, height: 0, pixels: [], needsClientLoad: true } },
-        };
-      }
-      if (sample?.columns && Array.isArray(sample.columns)) {
-        return {
-          ...prev,
-          datasetPreview: {
-            rows: sample.rows ?? [],
-            columns: sample.columns as string[],
-            dataType: 'tabular',
-          },
-        };
-      }
-      return prev;
-    }
-    case 'CONFUSION_MATRIX_READY': {
-      const url = (payload as any)?.asset_url;
-      const meta = url ? assetMeta.get(url) : undefined;
-      if (meta?.matrix) {
-        return { ...prev, confusionTable: meta.matrix as number[][] };
-      }
-      return prev;
-    }
-    case 'RESIDUALS_PLOT_READY': {
-      const url = (payload as any)?.asset_url;
-      const meta = url ? assetMeta.get(url) : undefined;
-      if (meta?.points) {
-        return { ...prev, residuals: meta.points as any };
-      }
-      return prev;
-    }
-    case 'LEADERBOARD_UPDATED': {
-      const rows = (payload?.rows as Array<{ model: string; params: Record<string, unknown>; metric: number }>) ?? [];
-      return {
-        ...prev,
-        leaderboard: rows.map((row, idx) => ({
-          rank: idx + 1,
-          model: row.model,
-          metricName: 'metric',
-          metricValue: row.metric,
-          params: row.params ?? {},
-        })),
+const initialState: MetricsState = {
+  events: [],
+  metrics: [],
+  gradients: [],
+  embeddings: [],
+  confusionMatrix: null,
+  featureImportances: null,
+  previewImages: [],
+  isConnected: false,
+  connectionError: null,
+};
+
+function reducer(state: MetricsState, action: Action): MetricsState {
+  switch (action.type) {
+    case 'WS_OPEN':
+      return { ...state, isConnected: true, connectionError: null };
+    
+    case 'WS_CLOSE':
+      return { ...state, isConnected: false };
+    
+    case 'WS_ERROR':
+      return { ...state, isConnected: false, connectionError: action.error };
+    
+    case 'WS_MESSAGE': {
+      const event = action.event;
+      const newState = {
+        ...state,
+        events: [...state.events, event].slice(-100), // Keep last 100 events
       };
+
+      // Route event to appropriate state slice
+      switch (event.type) {
+        case 'METRIC':
+          if (event.data && typeof event.data === 'object') {
+            newState.metrics = [...state.metrics, event.data as Record<string, number>].slice(-50);
+          }
+          break;
+
+        case 'GRADIENT':
+          if (event.epoch !== undefined) {
+            newState.gradients = [
+              ...state.gradients,
+              {
+                epoch: event.epoch as number,
+                layer: (event.layer as string) || 'unknown',
+                mean: (event.mean as number) || 0,
+                std: (event.std as number) || 0,
+              },
+            ].slice(-200);
+          }
+          break;
+
+        case 'EMBEDDING':
+          if (Array.isArray(event.points)) {
+            newState.embeddings = event.points as MetricsState['embeddings'];
+          }
+          break;
+
+        case 'CONFUSION_MATRIX':
+          if (Array.isArray(event.matrix)) {
+            newState.confusionMatrix = event.matrix as number[][];
+          }
+          break;
+
+        case 'FEATURE_IMPORTANCE':
+          if (Array.isArray(event.features)) {
+            newState.featureImportances = event.features as MetricsState['featureImportances'];
+          }
+          break;
+
+        case 'PREVIEW_IMAGE':
+          if (event.url && typeof event.url === 'string') {
+            newState.previewImages = [...state.previewImages, event.url].slice(-20);
+          }
+          break;
+
+        case 'STAGE_STATUS':
+          // Already captured in events array
+          break;
+
+        default:
+          // Unknown event type, just log
+          console.debug('Unknown WS event type:', event.type);
+      }
+
+      return newState;
     }
+
+    case 'RESET':
+      return initialState;
+
     default:
-      return prev;
+      return state;
   }
+}
+
+export function useLiveMetrics(projectId: string) {
+  const [state, dispatch] = useReducer(reducer, initialState);
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimeoutRef = useRef<number | null>(null);
+
+  const connect = useCallback(() => {
+    if (!projectId) return;
+
+    const wsUrl = `${WS_BASE}/ws/${projectId}`;
+    console.log('[WS] Connecting to:', wsUrl);
+
+    try {
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        console.log('[WS] Connected');
+        dispatch({ type: 'WS_OPEN' });
+      };
+
+      ws.onmessage = (evt) => {
+        try {
+          const event = JSON.parse(evt.data) as WSEvent;
+          dispatch({ type: 'WS_MESSAGE', event });
+        } catch (err) {
+          console.error('[WS] Failed to parse message:', err);
+        }
+      };
+
+      ws.onerror = (evt) => {
+        console.error('[WS] Error:', evt);
+        dispatch({ type: 'WS_ERROR', error: 'Connection error' });
+      };
+
+      ws.onclose = (evt) => {
+        console.log('[WS] Closed:', evt.code, evt.reason);
+        dispatch({ type: 'WS_CLOSE' });
+        
+        // Attempt reconnect after 3 seconds
+        if (reconnectTimeoutRef.current) {
+          clearTimeout(reconnectTimeoutRef.current);
+        }
+        reconnectTimeoutRef.current = window.setTimeout(() => {
+          console.log('[WS] Attempting reconnect...');
+          connect();
+        }, 3000);
+      };
+    } catch (err) {
+      console.error('[WS] Failed to create WebSocket:', err);
+      dispatch({ type: 'WS_ERROR', error: 'Failed to connect' });
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    dispatch({ type: 'RESET' });
+    connect();
+
+    return () => {
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+    };
+  }, [connect]);
+
+  return state;
 }

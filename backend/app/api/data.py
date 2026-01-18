@@ -49,10 +49,14 @@ def _hf_token() -> Optional[str]:
 
 
 async def _emit_sample(project_id: str, df: pd.DataFrame, sample_path: Path):
+    # Include first 5 rows as sample data for frontend display
+    sample_rows = df.head(5).to_dict('records')
+    
     payload = {
         "asset_url": _asset_url(sample_path),
         "columns": list(df.columns),
         "n_rows": len(df),
+        "sample_rows": sample_rows,  # Add actual row data
     }
     await event_bus.publish_event(
         project_id=project_id,
@@ -493,51 +497,4 @@ async def ingest_auto(project_id: str, dataset_hint: str = Body(..., embed=True)
     return await ingest_kaggle(project_id, dataset=chosen, file_name=file_name)
 
 
-"""
-Data API - Dataset ingestion and profiling.
-Placeholder - will be implemented in Phase 3-4.
-"""
-from fastapi import APIRouter, UploadFile, File
 
-router = APIRouter(prefix="/api/data", tags=["data"])
-
-
-@router.post("/upload/{project_id}")
-async def upload_dataset(project_id: str, file: UploadFile = File(...)):
-    """
-    Upload a CSV dataset.
-    Placeholder.
-    """
-    return {
-        "project_id": project_id,
-        "filename": file.filename,
-        "status": "uploaded",
-    }
-
-
-@router.get("/profile/{project_id}")
-async def get_profile(project_id: str):
-    """
-    Get dataset profile summary.
-    Placeholder.
-    """
-    return {
-        "project_id": project_id,
-        "n_rows": 1000,
-        "n_cols": 10,
-        "missing_pct": 5.2,
-        "types_breakdown": {"numeric": 7, "categorical": 3},
-    }
-
-
-@router.post("/demo/{project_id}")
-async def load_demo_dataset(project_id: str, dataset_name: str = "titanic"):
-    """
-    Load a built-in demo dataset.
-    Placeholder.
-    """
-    return {
-        "project_id": project_id,
-        "dataset": dataset_name,
-        "status": "loaded",
-    }
