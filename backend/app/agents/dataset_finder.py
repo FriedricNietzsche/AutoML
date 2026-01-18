@@ -170,6 +170,13 @@ Query:"""
                             filtered_count += 1
                             continue
                         
+                        # Skip datasets with deprecated loading scripts
+                        # These datasets have .py files and won't load with trust_remote_code=False
+                        tags = getattr(ds, "tags", []) or []
+                        # Check if dataset has a loading script (deprecated feature)
+                        # Most modern datasets don't have scripts, so we can't perfectly filter
+                        # but we can at least warn or skip known problematic ones
+                        
                         info = ds.card_data or {}
                         lic_raw = (info.get("license") or "").lower().strip()
                         

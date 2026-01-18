@@ -25,6 +25,7 @@ export default function RealBackendLoader({ session, onComplete, updateFileConte
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
   const [showUploadDialog, setShowUploadDialog] = useState(false);
   const [uploadingFile, setUploadingFile] = useState(false);
+  const [hasStageError, setHasStageError] = useState(false);
 
   const {
     connectionStatus,
@@ -42,11 +43,14 @@ export default function RealBackendLoader({ session, onComplete, updateFileConte
       updateFileContent('/logs/training.log', (prev) => 
         `${prev || ''}[${new Date().toISOString()}] Stage changed: ${stage}\n`
       );
+      // Clear error flag on successful stage change
+      setHasStageError(false);
     },
     onError: (err) => {
       console.error('[RealBackendLoader] Error:', err);
       setErrorDetails(err);
       setIsConfirming(false); // Reset on error
+      setHasStageError(true); // Set error flag
     },
     onComplete: () => {
       console.log('[RealBackendLoader] Pipeline complete!');
@@ -138,6 +142,18 @@ export default function RealBackendLoader({ session, onComplete, updateFileConte
       setSelectedDatasetId(null);
     }
   }, [projectId]);
+
+  // Handle choosing a different dataset (reset selection)
+  const handleChooseDifferentDataset = useCallback(() => {
+    setSelectedDatasetId(null);
+    setHasStageError(false);
+  }, []);
+
+  // Handle choosing a different model (reset selection)
+  const handleChooseDifferentModel = useCallback(() => {
+    setSelectedModelId(null);
+    setHasStageError(false);
+  }, []);
 
   // Handle file upload
   const handleFileUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -678,6 +694,64 @@ export default function RealBackendLoader({ session, onComplete, updateFileConte
                               </div>
                             )}
                           </div>
+                        ) : (payload as any)?.export ? (
+                          /* Special rendering for EXPORT stage with download button */
+                          <div className="mt-3 space-y-3">
+                            <div className="bg-gradient-to-br from-green-500/10 to-blue-500/10 border-2 border-green-500/50 rounded-lg p-4">
+                              <div className="flex items-start gap-3">
+                                <div className="text-3xl">📦</div>
+                                <div className="flex-1">
+                                  <h4 className="text-lg font-bold text-green-400 mb-2">Export Package Ready!</h4>
+                                  <p className="text-sm text-replit-textMuted mb-3">
+                                    Your trained model has been packaged with inference code and instructions.
+                                  </p>
+                                  
+                                  <div className="bg-replit-bg/50 rounded p-3 mb-3">
+                                    <div className="text-xs font-semibold text-replit-textMuted uppercase mb-2">Package Contents:</div>
+                                    <div className="space-y-1">
+                                      {(payload as any).export.files?.notebook && (
+                                        <div className="flex items-center gap-2 text-sm">
+                                          <span className="text-blue-400">📓</span>
+                                          <span className="text-replit-text">{(payload as any).export.files.notebook}</span>
+                                          <span className="text-xs text-replit-textMuted">(Jupyter notebook)</span>
+                                        </div>
+                                      )}
+                                      {(payload as any).export.files?.instructions && (
+                                        <div className="flex items-center gap-2 text-sm">
+                                          <span className="text-green-400">📄</span>
+                                          <span className="text-replit-text">{(payload as any).export.files.instructions}</span>
+                                          <span className="text-xs text-replit-textMuted">(Quick start guide)</span>
+                                        </div>
+                                      )}
+                                      {(payload as any).export.files?.model && (
+                                        <div className="flex items-center gap-2 text-sm">
+                                          <span className="text-purple-400">🤖</span>
+                                          <span className="text-replit-text">{(payload as any).export.files.model}</span>
+                                          <span className="text-xs text-replit-textMuted">(Trained model)</span>
+                                        </div>
+                                      )}
+                                    </div>
+                                    {(payload as any).export.size_mb && (
+                                      <div className="mt-2 text-xs text-replit-textMuted">
+                                        Total size: {(payload as any).export.size_mb} MB
+                                      </div>
+                                    )}
+                                  </div>
+                                  
+                                  <a
+                                    href={`http://localhost:8000${(payload as any).export.download_url}`}
+                                    download
+                                    className="inline-flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 text-white rounded-lg font-semibold transition-all shadow-lg hover:shadow-xl"
+                                  >
+                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                    </svg>
+                                    Download {(payload as any).export.zip_filename || 'Export Package'}
+                                  </a>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
                         ) : (
                           <pre className="text-xs text-replit-textMuted mt-2 overflow-x-auto">
                             {JSON.stringify(payload, null, 2)}
@@ -698,44 +772,77 @@ export default function RealBackendLoader({ session, onComplete, updateFileConte
       {/* Actions */}
       {currentStage && stages[currentStage]?.status === 'WAITING_CONFIRMATION' && (
         <div className="flex-shrink-0 bg-replit-surface/60 border-t border-replit-border px-6 py-4">
-          <div className="flex items-center gap-3">
-            <button
-              onClick={async () => {
-                if (isConfirming) return;
-                setIsConfirming(true);
-                try {
-                  await confirmStage();
-                } finally {
-                  setIsConfirming(false);
-                }
-              }}
-              disabled={isConfirming || (currentStage === 'DATA_SOURCE' && !selectedDatasetId) || (currentStage === 'MODEL_SELECT' && !selectedModelId)}
-              className="px-6 py-3 bg-replit-accent hover:bg-replit-accent/90 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-            >
-              {isConfirming ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Confirming...
-                </>
-              ) : currentStage === 'DATA_SOURCE' && !selectedDatasetId ? (
-                'Select a Dataset First'
-              ) : currentStage === 'MODEL_SELECT' && !selectedModelId ? (
-                'Select a Model First'
-              ) : (
-                'Confirm & Continue'
+          <div className="flex flex-col gap-3">
+            {/* Error message with option to go back */}
+            {hasStageError && (
+              <div className="flex items-center gap-2 px-4 py-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+                <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0" />
+                <span className="text-sm text-red-400 flex-1">
+                  {currentStage === 'DATA_SOURCE' 
+                    ? 'This dataset cannot be loaded. Please choose a different dataset or upload a CSV file.'
+                    : 'An error occurred. Please try a different selection.'}
+                </span>
+              </div>
+            )}
+            
+            <div className="flex items-center gap-3">
+              {/* Go Back / Choose Different button */}
+              {(selectedDatasetId || selectedModelId) && (
+                <button
+                  onClick={() => {
+                    if (currentStage === 'DATA_SOURCE') {
+                      handleChooseDifferentDataset();
+                    } else if (currentStage === 'MODEL_SELECT') {
+                      handleChooseDifferentModel();
+                    }
+                  }}
+                  className="px-4 py-3 bg-replit-surface hover:bg-replit-surface/80 border border-replit-border hover:border-yellow-500/50 text-replit-text rounded-lg font-medium transition-colors flex items-center gap-2"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+                  </svg>
+                  {currentStage === 'DATA_SOURCE' ? 'Choose Different Dataset' : 'Choose Different Model'}
+                </button>
               )}
-            </button>
-            <input
-              type="text"
-              placeholder="Send message to AI agent..."
-              className="flex-1 px-4 py-3 bg-replit-bg border border-replit-border rounded-lg text-replit-text placeholder-replit-textMuted focus:outline-none focus:ring-2 focus:ring-replit-accent"
-              onKeyPress={(e) => {
-                if (e.key === 'Enter' && e.currentTarget.value.trim()) {
-                  sendChatMessage(e.currentTarget.value);
-                  e.currentTarget.value = '';
-                }
-              }}
-            />
+              
+              <button
+                onClick={async () => {
+                  if (isConfirming) return;
+                  setIsConfirming(true);
+                  try {
+                    await confirmStage();
+                  } finally {
+                    setIsConfirming(false);
+                  }
+                }}
+                disabled={isConfirming || (currentStage === 'DATA_SOURCE' && !selectedDatasetId) || (currentStage === 'MODEL_SELECT' && !selectedModelId)}
+                className="px-6 py-3 bg-replit-accent hover:bg-replit-accent/90 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {isConfirming ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Confirming...
+                  </>
+                ) : currentStage === 'DATA_SOURCE' && !selectedDatasetId ? (
+                  'Select a Dataset First'
+                ) : currentStage === 'MODEL_SELECT' && !selectedModelId ? (
+                  'Select a Model First'
+                ) : (
+                  'Confirm & Continue'
+                )}
+              </button>
+              <input
+                type="text"
+                placeholder="Send message to AI agent..."
+                className="flex-1 px-4 py-3 bg-replit-bg border border-replit-border rounded-lg text-replit-text placeholder-replit-textMuted focus:outline-none focus:ring-2 focus:ring-replit-accent"
+                onKeyPress={(e) => {
+                  if (e.key === 'Enter' && e.currentTarget.value.trim()) {
+                    sendChatMessage(e.currentTarget.value);
+                    e.currentTarget.value = '';
+                  }
+                }}
+              />
+            </div>
           </div>
         </div>
       )}

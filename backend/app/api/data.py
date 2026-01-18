@@ -326,7 +326,25 @@ async def download_dataset(project_id: str):
             hf_dataset_id = selected.get("full_name", dataset_id)
             print(f"[API] Loading HuggingFace dataset: {hf_dataset_id}")
             
-            dataset = load_dataset(hf_dataset_id, split='train')  # Load full training set
+            # Try loading with trust_remote_code=False to avoid deprecated scripts
+            try:
+                dataset = load_dataset(hf_dataset_id, split='train', trust_remote_code=False)
+            except Exception as script_error:
+                error_msg = str(script_error).lower()
+                
+                # Check if it's a deprecated dataset script error
+                if "dataset scripts are no longer supported" in error_msg or "trust_remote_code" in error_msg:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"This dataset uses deprecated loading scripts and cannot be used. Please select a different dataset or upload your own CSV file."
+                    )
+                
+                # Otherwise re-raise the original error
+                raise script_error
+                
+        except HTTPException:
+            # Re-raise HTTPException directly
+            raise
         except Exception as load_error:
             # Provide helpful error message with suggestions
             error_msg = str(load_error)
@@ -418,7 +436,15 @@ async def download_dataset(project_id: str):
         return {"status": "ok", "selected": selected, "path": str(dataset_path)}
         
     except Exception as e:
-        print(f"[API] ❌ Error downloading dataset: {e}")
+        error_msg = str(e)
+        print(f"[API] ❌ Error downloading dataset: {error_msg}")
+        
+        # Make error message more user-friendly
+        user_friendly_msg = error_msg
+        if "dataset scripts are no longer supported" in error_msg.lower():
+            user_friendly_msg = "This dataset uses deprecated loading scripts and cannot be loaded. Please select a different dataset or upload your own CSV file."
+        elif "trust_remote_code" in error_msg.lower():
+            user_friendly_msg = "This dataset requires running external code which is not allowed for security reasons. Please select a different dataset or upload your own CSV file."
         
         # Publish error event
         await event_bus.publish_event(
@@ -427,13 +453,13 @@ async def download_dataset(project_id: str):
             payload={
                 "stage": StageID.DATA_SOURCE.value,
                 "status": StageStatus.FAILED.value,
-                "message": f"❌ Failed to download dataset: {str(e)}",
+                "message": f"❌ {user_friendly_msg}",
             },
             stage_id=StageID.DATA_SOURCE,
             stage_status=StageStatus.FAILED,
         )
         
-        raise HTTPException(status_code=500, detail=f"Failed to download dataset: {e}")
+        raise HTTPException(status_code=500, detail=user_friendly_msg)
 
 
 @router.post("/{project_id}/model/select")

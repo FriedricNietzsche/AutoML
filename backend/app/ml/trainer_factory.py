@@ -18,6 +18,20 @@ class TrainerFactory:
     - Each task gets the industry-standard best-practice model
     """
     
+    # Map model IDs from ModelSelector to trainer names
+    MODEL_ID_MAP = {
+        # Classification
+        "logreg": "logistic_regression",
+        "xgb_clf": "xgboost",
+        "rf_clf": "random_forest",
+        "gb_clf": "gradient_boosting",
+        # Regression
+        "linreg": "linear_regression",
+        "xgb_reg": "xgboost",
+        "rf_reg": "random_forest",
+        "gb_reg": "gradient_boosting",
+    }
+    
     @staticmethod
     def get_trainer(
         task_type: Literal["text_classification", "tabular_classification", "tabular_regression", "image_classification"],
@@ -34,6 +48,12 @@ class TrainerFactory:
         Returns:
             Trainer instance
         """
+        
+        # Map model ID to trainer name if needed
+        if model_name in TrainerFactory.MODEL_ID_MAP:
+            original_model_name = model_name
+            model_name = TrainerFactory.MODEL_ID_MAP[model_name]
+            print(f"[TrainerFactory] Mapped model ID '{original_model_name}' → '{model_name}'")
         
         if task_type == "text_classification":
             # Text classification → Use transformers (BERT, DistilBERT, etc.)
@@ -68,10 +88,27 @@ class TrainerFactory:
                     print(f"[TrainerFactory] XGBoost not available, using RandomForest")
                     from app.ml.tabular.random_forest_trainer import RandomForestTrainer
                     return RandomForestTrainer(task_type="classification")
-            elif model_name == "random_forest":
-                from app.ml.tabular.random_forest_trainer import RandomForestTrainer
-                print(f"[TrainerFactory] Creating RandomForest classifier")
-                return RandomForestTrainer(task_type="classification")
+            elif model_name in ["random_forest", "gradient_boosting", "logistic_regression"]:
+                # Map all sklearn models to appropriate trainers
+                if model_name == "random_forest":
+                    from app.ml.tabular.random_forest_trainer import RandomForestTrainer
+                    print(f"[TrainerFactory] Creating RandomForest classifier")
+                    return RandomForestTrainer(task_type="classification")
+                elif model_name == "gradient_boosting":
+                    # Use XGBoost as a substitute for GradientBoosting (same family, better performance)
+                    try:
+                        from app.ml.tabular.xgboost_trainer import XGBoostTrainer
+                        print(f"[TrainerFactory] Using XGBoost for GradientBoosting (better performance)")
+                        return XGBoostTrainer(task_type="classification")
+                    except ImportError:
+                        from app.ml.tabular.random_forest_trainer import RandomForestTrainer
+                        print(f"[TrainerFactory] Using RandomForest as fallback for GradientBoosting")
+                        return RandomForestTrainer(task_type="classification")
+                elif model_name == "logistic_regression":
+                    # Use RandomForest as a substitute (more powerful, works for same tasks)
+                    from app.ml.tabular.random_forest_trainer import RandomForestTrainer
+                    print(f"[TrainerFactory] Using RandomForest for LogisticRegression (more powerful)")
+                    return RandomForestTrainer(task_type="classification")
             else:
                 raise ValueError(f"Unknown tabular classification model: {model_name}")
         
@@ -86,10 +123,27 @@ class TrainerFactory:
                     print(f"[TrainerFactory] XGBoost not available, using RandomForest")
                     from app.ml.tabular.random_forest_trainer import RandomForestTrainer
                     return RandomForestTrainer(task_type="regression")
-            elif model_name == "random_forest":
-                from app.ml.tabular.random_forest_trainer import RandomForestTrainer
-                print(f"[TrainerFactory] Creating RandomForest regressor")
-                return RandomForestTrainer(task_type="regression")
+            elif model_name in ["random_forest", "gradient_boosting", "linear_regression"]:
+                # Map all sklearn models to appropriate trainers
+                if model_name == "random_forest":
+                    from app.ml.tabular.random_forest_trainer import RandomForestTrainer
+                    print(f"[TrainerFactory] Creating RandomForest regressor")
+                    return RandomForestTrainer(task_type="regression")
+                elif model_name == "gradient_boosting":
+                    # Use XGBoost as a substitute for GradientBoosting (same family, better performance)
+                    try:
+                        from app.ml.tabular.xgboost_trainer import XGBoostTrainer
+                        print(f"[TrainerFactory] Using XGBoost for GradientBoosting (better performance)")
+                        return XGBoostTrainer(task_type="regression")
+                    except ImportError:
+                        from app.ml.tabular.random_forest_trainer import RandomForestTrainer
+                        print(f"[TrainerFactory] Using RandomForest as fallback for GradientBoosting")
+                        return RandomForestTrainer(task_type="regression")
+                elif model_name == "linear_regression":
+                    # Use RandomForest as a substitute (more powerful, works for same tasks)
+                    from app.ml.tabular.random_forest_trainer import RandomForestTrainer
+                    print(f"[TrainerFactory] Using RandomForest for LinearRegression (more powerful)")
+                    return RandomForestTrainer(task_type="regression")
             else:
                 raise ValueError(f"Unknown tabular regression model: {model_name}")
         

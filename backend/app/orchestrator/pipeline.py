@@ -824,19 +824,148 @@ class PipelineOrchestrator:
     
     async def _execute_export(self, project_id: str) -> None:
         """Stage 8: Export trained model and generate notebook"""
+        import json
         context = self._get_context(project_id)
         
-        print("[1/3] Creating ReporterAgent...")
-        # TODO: Use ReporterAgent to generate notebook
+        print("[EXPORT] Starting export process...")
+        print("[1/5] Gathering project information...")
         
-        print("[2/3] Exporting model...")
+        # Generate timestamp for unique export
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Get project details
+        project_dir = Path(f"data/assets/projects/{project_id}")
+        model_path = context.get("trained_model_path")
+        training_metrics = context.get("training_metrics", {})
+        parsed_intent = context.get("parsed_intent", {})
+        task_type = training_metrics.get("task_type", "classification")
+        model_name = training_metrics.get("model_name", "Model")
+        
+        if not model_path:
+            print("[EXPORT] ⚠️ No trained model found, skipping export")
+            await conductor.waiting_for_confirmation(
+                project_id=project_id,
+                stage_id=StageID.EXPORT,
+                summary="No trained model available for export",
+                next_actions=[]
+            )
+            return
+        
+        print(f"[EXPORT] Model path: {model_path}")
+        print(f"[EXPORT] Task type: {task_type}")
+        print(f"[EXPORT] Model: {model_name}")
+        
+        # Create export directory
+        export_dir = project_dir / "export"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        
+        print("[2/5] Generating inference notebook...")
+        notebook_path = export_dir / "inference.ipynb"
+        
+        # Use AI agent to generate custom notebook
+        from app.agents.notebook_generator import NotebookGeneratorAgent
+        
+        # Gather additional context for notebook generation
+        try:
+            # Load original dataset to get sample data
+            import pandas as pd
+            original_path = context.get("dataset_path")
+            sample_data = None
+            feature_names = []
+            
+            if original_path and Path(original_path).exists():
+                df = pd.read_csv(original_path)
+                if len(df) > 0:
+                    # Get first row as sample (excluding target)
+                    target_col = parsed_intent.get("target_column", "")
+                    sample_row = df.drop(columns=[target_col], errors='ignore').iloc[0]
+                    sample_data = sample_row.to_dict()
+                    feature_names = list(sample_row.index)
+            
+            # If we have processed data, get feature names from there
+            processed_path = project_dir / "processed_data.csv"
+            if processed_path.exists() and not feature_names:
+                df_processed = pd.read_csv(processed_path)
+                target_col = parsed_intent.get("target_column", "")
+                feature_names = [col for col in df_processed.columns if col != target_col]
+            
+            # Generate notebook with AI
+            notebook_agent = NotebookGeneratorAgent()
+            notebook = notebook_agent.generate_notebook(
+                task_type=task_type,
+                model_name=model_name,
+                dataset_name=parsed_intent.get("dataset_name", "dataset"),
+                feature_names=feature_names,
+                target_column=parsed_intent.get("target_column", "target"),
+                metrics=training_metrics,
+                model_path=model_path,
+                sample_data=sample_data
+            )
+            
+            # Save notebook
+            with open(notebook_path, 'w') as f:
+                json.dump(notebook, f, indent=2)
+            
+            print(f"[EXPORT] ✅ AI-generated notebook created: {notebook_path}")
+            
+        except Exception as e:
+            print(f"[EXPORT] ⚠️ AI notebook generation failed: {e}, using fallback")
+            # Fallback to basic notebook
+            self._generate_basic_notebook(notebook_path, model_path, task_type, model_name, training_metrics)
+        
+        print(f"[EXPORT] ✅ Notebook created: {notebook_path}")
+        
+        print("[3/5] Generating instructions file...")
+        instructions_path = export_dir / "INFERENCE_INSTRUCTIONS.txt"
+        self._generate_instructions(
+            instructions_path,
+            model_path,
+            task_type,
+            model_name,
+            training_metrics
+        )
+        print(f"[EXPORT] ✅ Instructions created: {instructions_path}")
+        
+        print("[4/5] Copying trained model...")
+        import shutil
+        model_export_path = export_dir / Path(model_path).name
+        if Path(model_path).is_file():
+            shutil.copy2(model_path, model_export_path)
+        elif Path(model_path).is_dir():
+            # For image models (PyTorch directories)
+            if model_export_path.exists():
+                shutil.rmtree(model_export_path)
+            shutil.copytree(model_path, model_export_path)
+        print(f"[EXPORT] ✅ Model copied: {model_export_path}")
+        
+        print("[5/5] Creating ZIP bundle...")
+        import zipfile
+        zip_filename = f"{project_id}_export_{timestamp}.zip"
+        zip_path = project_dir / zip_filename
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for file in export_dir.rglob('*'):
+                if file.is_file():
+                    arcname = file.relative_to(export_dir)
+                    zipf.write(file, arcname)
+        
+        file_size_mb = zip_path.stat().st_size / (1024 * 1024)
+        print(f"[EXPORT] ✅ ZIP created: {zip_path} ({file_size_mb:.2f} MB)")
+        
+        # Publish export complete event
         export_info = {
-            "format": "ONNX",
-            "path": "/exports/model.onnx",
-            "notebook": "/exports/training.ipynb"
+            "zip_filename": zip_filename,
+            "zip_path": str(zip_path.relative_to(Path("data/assets"))),
+            "download_url": f"/api/assets/{zip_path.relative_to(Path('data/assets'))}",
+            "timestamp": timestamp,
+            "files": {
+                "notebook": "inference.ipynb",
+                "instructions": "INFERENCE_INSTRUCTIONS.txt",
+                "model": Path(model_path).name
+            },
+            "size_mb": round(file_size_mb, 2)
         }
         
-        print("[3/3] Publishing EXPORT_COMPLETE event...")
         await event_bus.publish_event(
             project_id=project_id,
             event_name=EventType.STAGE_STATUS,
@@ -848,11 +977,380 @@ class PipelineOrchestrator:
         await conductor.waiting_for_confirmation(
             project_id=project_id,
             stage_id=StageID.EXPORT,
-            summary="Model exported successfully! Download your trained model and training notebook.",
-            next_actions=["Download model", "View notebook"]
+            summary=f"✅ Export complete! Package includes inference notebook, instructions, and trained model ({file_size_mb:.1f} MB)",
+            next_actions=[f"Download {zip_filename}"]
         )
         
         print("[EXPORT] ✅ Complete - Pipeline finished!")
+    
+    def _generate_basic_notebook(self, path: Path, model_path: str, task_type: str, model_name: str, metrics: dict):
+        """Generate basic inference notebook (fallback if AI generation fails)"""
+        import json
+        
+        # Determine if it's an image model (directory) or tabular/text model (file)
+        is_image_model = Path(model_path).is_dir()
+        
+        cells = []
+        
+        # Title
+        cells.append({
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                f"# {model_name} - Inference Notebook\n",
+                "\n",
+                f"**Task Type:** {task_type}\n",
+                "\n",
+                "This notebook shows how to load the trained model and make predictions on new data.\n"
+            ]
+        })
+        
+        # Import libraries
+        cells.append({
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": ["## 1. Import Libraries\n"]
+        })
+        
+        if is_image_model:
+            cells.append({
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": [
+                    "import torch\n",
+                    "import torch.nn as nn\n",
+                    "from torchvision import transforms\n",
+                    "from PIL import Image\n",
+                    "import json\n",
+                    "from pathlib import Path\n"
+                ]
+            })
+        else:
+            cells.append({
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": [
+                    "import joblib\n",
+                    "import pandas as pd\n",
+                    "import numpy as np\n",
+                    "from pathlib import Path\n"
+                ]
+            })
+        
+        # Load model
+        cells.append({
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": ["## 2. Load Trained Model\n"]
+        })
+        
+        model_file = Path(model_path).name
+        
+        if is_image_model:
+            cells.append({
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": [
+                    f"# Load model metadata\n",
+                    f"with open('{model_file}/metadata.json', 'r') as f:\n",
+                    "    metadata = json.load(f)\n",
+                    "\n",
+                    "print(f\"Model: {{metadata['model_name']}}\")\n",
+                    "print(f\"Classes: {{metadata['class_names']}}\")\n"
+                ]
+            })
+        else:
+            cells.append({
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": [
+                    f"# Load the trained model\n",
+                    f"model_data = joblib.load('{model_file}')\n",
+                    "\n",
+                    "# Extract model and metadata\n",
+                    "if isinstance(model_data, dict):\n",
+                    "    model = model_data['model']\n",
+                    "    feature_names = model_data.get('feature_names', [])\n",
+                    "    print(f\"Model loaded: {{type(model).__name__}}\")\n",
+                    "    print(f\"Features: {{len(feature_names)}}\")\n",
+                    "else:\n",
+                    "    model = model_data\n",
+                    "    print(f\"Model loaded: {{type(model).__name__}}\")\n"
+                ]
+            })
+        
+        # Make predictions
+        cells.append({
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": ["## 3. Make Predictions\n"]
+        })
+        
+        if is_image_model:
+            cells.append({
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": [
+                    "# Example: Predict on a single image\n",
+                    "def predict_image(image_path):\n",
+                    "    # Load and preprocess image\n",
+                    "    transform = transforms.Compose([\n",
+                    "        transforms.Resize(256),\n",
+                    "        transforms.CenterCrop(224),\n",
+                    "        transforms.ToTensor(),\n",
+                    "        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])\n",
+                    "    ])\n",
+                    "    \n",
+                    "    image = Image.open(image_path).convert('RGB')\n",
+                    "    image_tensor = transform(image).unsqueeze(0)\n",
+                    "    \n",
+                    "    # Load model and predict\n",
+                    "    # (You'll need to rebuild the model architecture here)\n",
+                    "    # See INFERENCE_INSTRUCTIONS.txt for full code\n",
+                    "    \n",
+                    "    return predicted_class\n",
+                    "\n",
+                    "# Example usage:\n",
+                    "# prediction = predict_image('path/to/image.jpg')\n",
+                    "# print(f\"Predicted: {metadata['class_names'][prediction]}\")\n"
+                ]
+            })
+        elif "classification" in task_type:
+            cells.append({
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": [
+                    "# Example: Predict on new data\n",
+                    "# Create a sample with the same features used during training\n",
+                    "if 'feature_names' in locals():\n",
+                    "    print(\"Required features:\", feature_names[:5], \"...\" if len(feature_names) > 5 else \"\")\n",
+                    "\n",
+                    "# Replace with your actual data\n",
+                    "new_data = pd.DataFrame({\n",
+                    "    # Add your feature columns here matching the training features\n",
+                    "    # Example (replace with actual column names):\n",
+                    "    # 'age': [25],\n",
+                    "    # 'income': [50000],\n",
+                    "})\n",
+                    "\n",
+                    "# Ensure columns match training features\n",
+                    "if 'feature_names' in locals():\n",
+                    "    new_data = new_data[feature_names]\n",
+                    "\n",
+                    "# Make predictions\n",
+                    "predictions = model.predict(new_data)\n",
+                    "probabilities = model.predict_proba(new_data)\n",
+                    "\n",
+                    "print(\"Predictions:\", predictions)\n",
+                    "print(\"Probabilities:\", probabilities)\n"
+                ]
+            })
+        else:  # Regression
+            cells.append({
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": [
+                    "# Example: Predict on new data\n",
+                    "# Create a sample with the same features used during training\n",
+                    "if 'feature_names' in locals():\n",
+                    "    print(\"Required features:\", feature_names[:5], \"...\" if len(feature_names) > 5 else \"\")\n",
+                    "\n",
+                    "# Replace with your actual data\n",
+                    "new_data = pd.DataFrame({\n",
+                    "    # Add your feature columns here matching the training features\n",
+                    "    # Example (replace with actual column names):\n",
+                    "    # 'age': [25],\n",
+                    "    # 'sqft': [1500],\n",
+                    "})\n",
+                    "\n",
+                    "# Ensure columns match training features\n",
+                    "if 'feature_names' in locals():\n",
+                    "    new_data = new_data[feature_names]\n",
+                    "\n",
+                    "# Make predictions\n",
+                    "predictions = model.predict(new_data)\n",
+                    "\n",
+                    "print(\"Predictions:\", predictions)\n"
+                ]
+            })
+        
+        # Model metrics
+        if metrics:
+            cells.append({
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": ["## 4. Model Performance\n"]
+            })
+            
+            metrics_str = "\\n".join([f"- **{k}**: {v}" for k, v in metrics.items() if k not in ["model_name", "task_type", "dataset"]])
+            cells.append({
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": [metrics_str]
+            })
+        
+        # Create notebook structure
+        notebook = {
+            "cells": cells,
+            "metadata": {
+                "kernelspec": {
+                    "display_name": "Python 3",
+                    "language": "python",
+                    "name": "python3"
+                },
+                "language_info": {
+                    "codemirror_mode": {"name": "ipython", "version": 3},
+                    "file_extension": ".py",
+                    "mimetype": "text/x-python",
+                    "name": "python",
+                    "nbconvert_exporter": "python",
+                    "pygments_lexer": "ipython3",
+                    "version": "3.11.0"
+                }
+            },
+            "nbformat": 4,
+            "nbformat_minor": 4
+        }
+        
+        with open(path, 'w') as f:
+            json.dump(notebook, f, indent=2)
+    
+    def _generate_instructions(self, path: Path, model_path: str, task_type: str, model_name: str, metrics: dict):
+        """Generate text instructions for inference"""
+        is_image_model = Path(model_path).is_dir()
+        model_file = Path(model_path).name
+        
+        instructions = f"""
+================================================================================
+{model_name.upper()} - INFERENCE INSTRUCTIONS
+================================================================================
+
+Task Type: {task_type}
+Model File: {model_file}
+
+================================================================================
+QUICK START
+================================================================================
+
+1. Install required packages:
+   pip install joblib pandas numpy scikit-learn{'torch torchvision pillow' if is_image_model else ''}
+
+2. Load the model:
+"""
+        
+        if is_image_model:
+            instructions += f"""
+   import torch
+   import json
+   from pathlib import Path
+   
+   # Load metadata
+   with open('{model_file}/metadata.json', 'r') as f:
+       metadata = json.load(f)
+   
+   # You'll need to rebuild the model architecture
+   # See the notebook for complete code
+"""
+        else:
+            instructions += f"""
+   import joblib
+   model = joblib.load('{model_file}')
+"""
+        
+        instructions += """
+
+3. Make predictions:
+"""
+        
+        if is_image_model:
+            instructions += """
+   # Preprocess image and predict
+   # See inference.ipynb for complete example
+"""
+        elif "classification" in task_type:
+            instructions += """
+   import pandas as pd
+   
+   new_data = pd.DataFrame({
+       'feature1': [value1],
+       'feature2': [value2],
+       # Add all features used during training
+   })
+   
+   predictions = model.predict(new_data)
+   probabilities = model.predict_proba(new_data)
+"""
+        else:  # Regression
+            instructions += """
+   import pandas as pd
+   
+   new_data = pd.DataFrame({
+       'feature1': [value1],
+       'feature2': [value2],
+       # Add all features used during training
+   })
+   
+   predictions = model.predict(new_data)
+"""
+        
+        instructions += f"""
+
+================================================================================
+MODEL PERFORMANCE
+================================================================================
+
+"""
+        
+        for key, value in metrics.items():
+            if key not in ["model_name", "task_type", "dataset"]:
+                instructions += f"{key}: {value}\n"
+        
+        instructions += """
+
+================================================================================
+IMPORTANT NOTES
+================================================================================
+
+1. Input data MUST have the same features (columns) as training data
+2. Feature names must match exactly
+3. Data types must be consistent
+4. Missing values should be handled the same way as during training
+5. For best results, preprocess new data the same way as training data
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+Error: "Feature names mismatch"
+→ Check that your input DataFrame has all the required columns
+
+Error: "Model not found"
+→ Make sure the model file is in the same directory as your script
+
+Error: "Import error"
+→ Install missing packages: pip install -r requirements.txt
+
+================================================================================
+For more details, see inference.ipynb
+================================================================================
+"""
+        
+        with open(path, 'w') as f:
+            f.write(instructions)
     
     async def handle_confirmation(self, project_id: str, user_selection: Optional[Dict[str, Any]] = None) -> None:
         """
