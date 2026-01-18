@@ -14,6 +14,7 @@ class StageID(str, Enum):
     PREPROCESS = "PREPROCESS"
     MODEL_SELECT = "MODEL_SELECT"
     TRAIN = "TRAIN"
+    EVALUATE = "EVALUATE"
     REVIEW_EDIT = "REVIEW_EDIT"
     EXPORT = "EXPORT"
 
@@ -36,6 +37,7 @@ STAGE_SEQUENCE: List[StageID] = [
     StageID.PREPROCESS,
     StageID.MODEL_SELECT,
     StageID.TRAIN,
+    StageID.EVALUATE,
     StageID.REVIEW_EDIT,
     StageID.EXPORT,
 ]

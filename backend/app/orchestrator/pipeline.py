@@ -103,6 +103,9 @@ class PipelineOrchestrator:
             elif stage_id == StageID.TRAIN:
                 await self._execute_train(project_id)
             
+            elif stage_id == StageID.EVALUATE:
+                await self._execute_evaluate(project_id)
+            
             elif stage_id == StageID.REVIEW_EDIT:
                 await self._execute_review_edit(project_id)
             
@@ -784,6 +787,47 @@ class PipelineOrchestrator:
             raise
         
         print("[TRAIN] ✅ Complete")
+    
+    async def _execute_evaluate(self, project_id: str) -> None:
+        """Stage 7: Interactive model evaluation - Try your model"""
+        context = self._get_context(project_id)
+        
+        print("[EVALUATE] Starting interactive evaluation...")
+        print("[1/3] Loading sample data...")
+        
+        # Get project directory
+        project_dir = Path(f"data/assets/projects/{project_id}")
+        
+        # Load training metrics for display
+        training_metrics = context.get("training_metrics", {})
+        
+        # Publish evaluation ready event with sample data
+        await event_bus.publish_event(
+            project_id=project_id,
+            event_name=EventType.STAGE_STATUS,
+            payload={
+                "stage": StageID.EVALUATE.value,
+                "status": StageStatus.IN_PROGRESS.value,
+                "message": "✅ Model ready for testing! Try predictions with sample data.",
+                "metrics": training_metrics,
+                "interactive": True
+            },
+            stage_id=StageID.EVALUATE,
+            stage_status=StageStatus.IN_PROGRESS,
+        )
+        
+        print("[2/3] Model evaluation interface ready...")
+        print("[3/3] Waiting for user interaction...")
+        
+        # Wait for user confirmation to proceed to export
+        await conductor.waiting_for_confirmation(
+            project_id=project_id,
+            stage_id=StageID.EVALUATE,
+            summary=f"✅ Model trained successfully! Try predictions above or continue to export.",
+            next_actions=["Test predictions with sample data", "Continue to export"]
+        )
+        
+        print("[EVALUATE] ✅ Complete")
     
     async def _execute_review_edit(self, project_id: str) -> None:
         """Stage 7: Review and evaluate trained model"""
