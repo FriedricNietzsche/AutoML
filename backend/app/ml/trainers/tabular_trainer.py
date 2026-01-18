@@ -216,7 +216,7 @@ class TabularTrainer:
             )
             await self._emit(
                 EventType.ARTIFACT_ADDED,
-                {"artifact": {"id": f"{self.run_id}_confusion", "type": "confusion_matrix", "name": "Confusion Matrix", "url": artifacts["confusion"], "meta": {}}},
+                {"artifact": {"id": f"{self.run_id}_confusion", "type": "confusion_matrix", "name": "Confusion Matrix", "url": artifacts["confusion"], "meta": {"kind": "confusion_matrix", "matrix": cm}}},
             )
             # Feature importance
             try:
@@ -232,7 +232,7 @@ class TabularTrainer:
                 )
                 await self._emit(
                     EventType.ARTIFACT_ADDED,
-                    {"artifact": {"id": f"{self.run_id}_fi", "type": "feature_importance", "name": "Feature Importance", "url": artifacts["feature_importance"], "meta": {}}},
+                    {"artifact": {"id": f"{self.run_id}_fi", "type": "feature_importance", "name": "Feature Importance", "url": artifacts["feature_importance"], "meta": {"kind": "feature_importance", "ranking": ranked}}},
                 )
             except Exception:
                 pass
@@ -256,7 +256,7 @@ class TabularTrainer:
             )
             await self._emit(
                 EventType.ARTIFACT_ADDED,
-                {"artifact": {"id": f"{self.run_id}_resid", "type": "residuals", "name": "Residuals", "url": artifacts["residuals"], "meta": {}}},
+                {"artifact": {"id": f"{self.run_id}_resid", "type": "residuals", "name": "Residuals", "url": artifacts["residuals"], "meta": {"kind": "residuals", "points": residuals}}},
             )
 
         await self._emit(

@@ -335,6 +335,44 @@ async def ingest_hf_images(
     await conductor.transition_to(project_id, StageID.PROFILE_DATA, StageStatus.IN_PROGRESS, "Profiling dataset")
     await _emit_profile(project_id, df, project_dir / "profile")
 
+    # Emit dataset preview with image asset URLs for frontend to load and visualize.
+    asset_urls = [f"/api/assets/{_asset_rel(images_dir / name)}" for name in label_map.keys()]
+    preview_payload = {
+        "images": asset_urls,
+        "imageData": {"width": 0, "height": 0, "pixels": [], "needsClientLoad": True},
+    }
+    await event_bus.publish_event(
+        project_id=project_id,
+        event_name=EventType.DATASET_SAMPLE_READY,
+        payload=preview_payload,
+        stage_id=StageID.DATA_SOURCE,
+        stage_status=StageStatus.COMPLETED,
+    )
+
+    # Emit a simple pipeline graph to drive UI visuals.
+    pipeline_graph = {
+        "nodes": [
+            {"id": "ingest", "label": "Ingest Images"},
+            {"id": "preprocess", "label": "Preprocess / Augment"},
+            {"id": "train", "label": "Train CNN"},
+            {"id": "eval", "label": "Evaluate"},
+            {"id": "export", "label": "Export"},
+        ],
+        "edges": [
+            {"from": "ingest", "to": "preprocess"},
+            {"from": "preprocess", "to": "train"},
+            {"from": "train", "to": "eval"},
+            {"from": "eval", "to": "export"},
+        ],
+    }
+    await event_bus.publish_event(
+        project_id=project_id,
+        event_name=EventType.ARTIFACT_ADDED,
+        payload={"artifact": {"id": "pipeline_graph", "type": "pipeline_graph", "name": "Pipeline", "url": "", "meta": {"kind": "pipeline_graph", "graph": pipeline_graph}}},
+        stage_id=StageID.PREPROCESS,
+        stage_status=StageStatus.PENDING,
+    )
+
     return {"status": "ok", "images": saved, "labels": list(set(label_map.values()))}
 
 
