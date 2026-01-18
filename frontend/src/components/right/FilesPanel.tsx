@@ -1,11 +1,10 @@
 import { useState } from 'react';
-import { ChevronRight, ChevronDown, Folder, FileCode, FileJson, FileText, ChevronRight as CollapseIcon } from 'lucide-react';
+import { ChevronRight, ChevronDown, Folder, FileCode, FileJson, FileText } from 'lucide-react';
 import type { FileSystemNode } from '../../lib/types';
 
 interface FilesPanelProps {
   onFileSelect: (node: FileSystemNode) => void;
   files: FileSystemNode[];
-  onCollapse: () => void;
 }
 
 function FileIcon({ name }: { name: string }) {
@@ -84,7 +83,7 @@ function FileTreeItem({ node, depth, onToggle, onSelect }: FileTreeItemProps) {
   );
 }
 
-export default function FilesPanel({ onFileSelect, files, onCollapse }: FilesPanelProps) {
+export default function FilesPanel({ onFileSelect, files }: FilesPanelProps) {
   // Local state for expanded folders - ideally this should also sync up, but for now local is fine
   // Actually, 'files' prop has 'isOpen' property, but AppShell owns the state.
   // We need to support toggling folders.
@@ -124,24 +123,6 @@ export default function FilesPanel({ onFileSelect, files, onCollapse }: FilesPan
 
   return (
     <div className="flex flex-col h-full">
-      <div className="border-b border-replit-border">
-        <div className="px-3 py-3 flex items-center gap-2">
-          <span className="min-w-0 flex-1 text-xs font-bold text-replit-textMuted uppercase tracking-wider truncate">
-            Explorer
-          </span>
-          <div className="shrink-0 flex gap-1">
-            <button
-              onClick={onCollapse}
-              className="p-1 text-replit-textMuted hover:text-replit-text hover:bg-replit-surfaceHover/40 rounded"
-              aria-label="Collapse file explorer"
-              title="Collapse (Ctrl+E)"
-            >
-              <CollapseIcon size={14} />
-            </button>
-          </div>
-        </div>
-      </div>
-
       <div className="flex-1 overflow-y-auto py-2">
         {files && files.length > 0 ? renderTree(files) : (
             <div className="p-4 text-xs text-replit-textMuted text-center">No files open</div>

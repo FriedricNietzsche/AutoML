@@ -327,20 +327,57 @@ async def download_dataset(project_id: str):
             print(f"[API] Loading HuggingFace dataset: {hf_dataset_id}")
             
             # Try loading with trust_remote_code=False to avoid deprecated scripts
-            try:
-                dataset = load_dataset(hf_dataset_id, split='train', trust_remote_code=False)
-            except Exception as script_error:
-                error_msg = str(script_error).lower()
-                
-                # Check if it's a deprecated dataset script error
-                if "dataset scripts are no longer supported" in error_msg or "trust_remote_code" in error_msg:
-                    raise HTTPException(
-                        status_code=400, 
-                        detail=f"This dataset uses deprecated loading scripts and cannot be used. Please select a different dataset or upload your own CSV file."
-                    )
-                
-                # Otherwise re-raise the original error
-                raise script_error
+            # Try different splits in order of preference
+            dataset = None
+            splits_to_try = ['train', 'test', 'validation', None]  # None means load all splits
+            last_error = None
+            
+            for split_attempt in splits_to_try:
+                try:
+                    print(f"[API] Attempting to load with split={split_attempt}")
+                    if split_attempt is None:
+                        # Load entire dataset without specifying split
+                        full_dataset = load_dataset(hf_dataset_id, trust_remote_code=False)
+                        # Get the first available split
+                        if hasattr(full_dataset, 'keys'):
+                            available_splits = list(full_dataset.keys())
+                            print(f"[API] Dataset has splits: {available_splits}")
+                            if available_splits:
+                                dataset = full_dataset[available_splits[0]]
+                                print(f"[API] Using split: {available_splits[0]}")
+                        else:
+                            dataset = full_dataset
+                    else:
+                        dataset = load_dataset(hf_dataset_id, split=split_attempt, trust_remote_code=False)
+                        print(f"[API] Successfully loaded with split: {split_attempt}")
+                    break  # Success, exit loop
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    print(f"[API] Failed with split={split_attempt}: {e}")
+                    last_error = e
+                    
+                    # Check for fatal errors that shouldn't be retried
+                    if "dataset scripts are no longer supported" in error_msg or "trust_remote_code" in error_msg:
+                        raise HTTPException(
+                            status_code=400, 
+                            detail=f"This dataset uses deprecated loading scripts and cannot be used. Please select a different dataset or upload your own CSV file."
+                        )
+                    
+                    # For split errors, continue trying other splits
+                    if "unknown split" in error_msg or "should be one of" in error_msg:
+                        continue
+                    
+                    # For other errors on last attempt, raise
+                    if split_attempt is None:
+                        raise
+            
+            if dataset is None:
+                # All attempts failed
+                error_msg = str(last_error) if last_error else "Unknown error"
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Failed to load dataset: {error_msg}. Please try a different dataset or upload your own CSV file."
+                )
                 
         except HTTPException:
             # Re-raise HTTPException directly
@@ -370,8 +407,8 @@ async def download_dataset(project_id: str):
         # Convert to pandas
         df_full = dataset.to_pandas()
         
-        # Sample dataset for faster iteration (limit to 500 rows)
-        MAX_SAMPLES = 500
+        # Sample dataset for faster iteration (limit to 200 rows for fast local training)
+        MAX_SAMPLES = 200  # Reduced from 500
         
         if len(df_full) > MAX_SAMPLES:
             print(f"[API] Large dataset detected ({len(df_full)} rows). Sampling {MAX_SAMPLES} for demo.")
@@ -544,7 +581,7 @@ async def ingest_hf(
     project_id: str,
     dataset: str = Body(..., embed=True),
     split: str = Body("train", embed=True),
-    max_rows: int = Body(500, embed=True),
+    max_rows: int = Body(200, embed=True),  # Reduced from 500 for faster training
 ):
     """
     Ingest a dataset from Hugging Face Hub using `datasets`.
@@ -557,11 +594,39 @@ async def ingest_hf(
 
     project_dir = _project_dir(project_id)
     log.info("Downloading HF dataset %s split=%s (max_rows=%s)...", dataset, split, max_rows)
-    try:
-        token = _hf_token()
-        ds = load_dataset(dataset, split=split, token=token)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to load dataset {dataset}:{split} from HF: {e}")
+    
+    token = _hf_token()
+    ds = None
+    splits_to_try = [split, 'train', 'test', 'validation', None]
+    # Remove duplicates while preserving order
+    splits_to_try = list(dict.fromkeys(splits_to_try))
+    
+    last_error = None
+    for split_attempt in splits_to_try:
+        try:
+            if split_attempt is None:
+                # Load entire dataset and use first split
+                full_ds = load_dataset(dataset, token=token)
+                if hasattr(full_ds, 'keys'):
+                    available = list(full_ds.keys())
+                    if available:
+                        ds = full_ds[available[0]]
+                        log.info(f"Using split: {available[0]}")
+                else:
+                    ds = full_ds
+            else:
+                ds = load_dataset(dataset, split=split_attempt, token=token)
+                log.info(f"Successfully loaded split: {split_attempt}")
+            break
+        except Exception as e:
+            last_error = e
+            log.warning(f"Failed to load with split={split_attempt}: {e}")
+            if "unknown split" not in str(e).lower():
+                # Not a split error, don't retry
+                break
+    
+    if ds is None:
+        raise HTTPException(status_code=400, detail=f"Failed to load dataset {dataset} from HF: {last_error}")
 
     try:
         import numpy as np  # local import for hf conversion
@@ -612,15 +677,34 @@ async def ingest_hf_images(
         raise HTTPException(status_code=500, detail=f"datasets package not available: {e}")
 
     token = _hf_token()
+    
+    ds = None
+    splits_to_try = [split, 'train', 'test', 'validation']
+    splits_to_try = list(dict.fromkeys(splits_to_try))  # Remove duplicates
+    
     streaming = True
-    try:
-        ds = load_dataset(dataset, split=split, streaming=True, token=token)
-    except Exception:
-        streaming = False
+    last_error = None
+    
+    for split_attempt in splits_to_try:
         try:
-            ds = load_dataset(dataset, split=split, token=token)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Failed to load dataset {dataset}:{split} from HF: {e}")
+            ds = load_dataset(dataset, split=split_attempt, streaming=True, token=token)
+            log.info(f"Successfully loaded split: {split_attempt} (streaming)")
+            break
+        except Exception as stream_err:
+            log.warning(f"Streaming failed for split={split_attempt}: {stream_err}")
+            streaming = False
+            try:
+                ds = load_dataset(dataset, split=split_attempt, token=token)
+                log.info(f"Successfully loaded split: {split_attempt} (non-streaming)")
+                break
+            except Exception as e:
+                last_error = e
+                log.warning(f"Failed to load with split={split_attempt}: {e}")
+                if "unknown split" not in str(e).lower():
+                    break  # Not a split error, don't retry
+    
+    if ds is None:
+        raise HTTPException(status_code=400, detail=f"Failed to load dataset {dataset} from HF: {last_error}")
 
     project_dir = _project_dir(project_id)
     images_dir = project_dir / "images"

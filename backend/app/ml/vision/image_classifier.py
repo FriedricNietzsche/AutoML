@@ -137,7 +137,7 @@ class ImageClassifier:
         val_image_paths: Optional[List[str]] = None,
         val_labels: Optional[List[int]] = None,
         class_names: Optional[List[str]] = None,
-        num_epochs: int = 10,
+        num_epochs: int = 2,  # Reduced from 10 for faster training
         batch_size: int = 32,
         learning_rate: float = 0.001,
         freeze_backbone: bool = True,

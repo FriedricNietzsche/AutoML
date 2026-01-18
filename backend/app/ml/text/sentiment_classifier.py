@@ -28,7 +28,7 @@ class SentimentClassifier:
         train_labels: list,
         val_texts: Optional[list] = None,
         val_labels: Optional[list] = None,
-        num_epochs: int = 3,
+        num_epochs: int = 1,  # Reduced from 3 for faster training
         batch_size: int = 16,
         learning_rate: float = 2e-5,
     ) -> Dict[str, Any]:
@@ -210,7 +210,7 @@ class SentimentClassifier:
         X_train = self.tokenizer.fit_transform(train_texts)
         
         # Train logistic regression
-        self.model = LogisticRegression(max_iter=1000, random_state=42)
+        self.model = LogisticRegression(max_iter=200, random_state=42)  # Reduced from 1000
         self.model.fit(X_train, train_labels)
         
         # Evaluate

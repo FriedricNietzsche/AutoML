@@ -7,7 +7,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { AlertCircle, CheckCircle2, Loader2, WifiOff, Sparkles } from 'lucide-react';
 import { useBackendPipeline } from '../../../hooks/useBackendPipeline';
-import type { EventEnvelope } from '../../../lib/ws';
 import type { BuildSession } from '../../../lib/buildSession';
 
 interface RealBackendLoaderProps {
@@ -28,7 +27,7 @@ export default function RealBackendLoader({ session, onComplete, updateFileConte
   const [hasStageError, setHasStageError] = useState(false);
   
   // Prediction/Evaluation state
-  const [predictionInput, setPredictionInput] = useState<Record<string, any>>({});
+  const [, setPredictionInput] = useState<Record<string, any>>({});
   const [predictionResult, setPredictionResult] = useState<any>(null);
   const [isPredicting, setIsPredicting] = useState(false);
   const [sampleData, setSampleData] = useState<any[]>([]);

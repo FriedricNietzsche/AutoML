@@ -43,7 +43,7 @@ async def train_tabular(
         raise HTTPException(status_code=404, detail="No CSV found for project")
     df = pd.read_csv(csv_files[0])
     # Guardrail: cap rows to keep training fast in demos/e2e (especially wide/large datasets like MNIST CSV).
-    max_rows = int(os.getenv("TRAIN_MAX_ROWS", "50"))
+    max_rows = int(os.getenv("TRAIN_MAX_ROWS", "30"))  # Reduced from 50 for faster training
     if len(df) > max_rows:
         df = df.sample(n=max_rows, random_state=42)
     log.info("Training tabular model: project=%s rows=%s cols=%s task=%s model=%s", project_id, len(df), len(df.columns), task_type, model_id)
@@ -84,7 +84,7 @@ async def train_time_series(
     if not csv_files:
         raise HTTPException(status_code=404, detail="No CSV found for project")
     df = pd.read_csv(csv_files[0])
-    max_rows = int(os.getenv("TRAIN_MAX_ROWS", "200"))
+    max_rows = int(os.getenv("TRAIN_MAX_ROWS", "50"))  # Reduced from 200 for faster training
     if len(df) > max_rows:
         df = df.sample(n=max_rows, random_state=42)
     trainer = TimeSeriesTrainer(TimeSeriesConfig(project_id=project_id, value_col=value_col, lags=lags))
