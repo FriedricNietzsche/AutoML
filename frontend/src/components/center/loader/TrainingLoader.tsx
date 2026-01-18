@@ -10,6 +10,7 @@ import { VISUAL_LABEL, VISUALS } from './visuals/visualRegistry';
 import TrainingLossVisualizer from './TrainingLossVisualizer';
 import ModelMetricsVisualizer from './ModelMetricsVisualizer';
 import { useMockAutoMLStream } from '../../../mock/useMockAutoMLStream';
+import { useLiveMetrics } from '../../../hooks/useLiveMetrics';
 import type { ScenarioId } from '../../../mock/scenarios';
 import type { MockWSEnvelope } from '../../../mock/backendEventTypes';
 import type { ArtifactAddedPayload, LogLinePayload } from '../../../lib/contract';
@@ -217,11 +218,14 @@ export default function TrainingLoader({ onComplete, updateFileContent, scenario
     setActiveScenario(scenarioId);
   }, [scenarioId]);
 
-  const { events, metricsState } = useMockAutoMLStream({
+  const { events: mockEvents, metricsState: mockMetrics } = useMockAutoMLStream({
     scenarioId: activeScenario,
     seed,
     enabled: useMockStream && currentStage > 0,
   });
+  const { metricsState: liveMetrics } = useLiveMetrics();
+  const metricsState = useMockStream ? mockMetrics : liveMetrics;
+  const events = useMockStream ? mockEvents : [];
   const applyProjectEvent = useProjectStore((state) => state.applyEvent);
 
   // Load actual image pixels client-side for image data

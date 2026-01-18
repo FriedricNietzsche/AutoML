@@ -7,7 +7,7 @@ import asyncio
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 import numpy as np
 import os
@@ -110,6 +110,11 @@ class ImageTrainer:
                 {"run_id": self.run_id, "status": "success", "final_metrics": {"accuracy": acc}},
                 stage_status=StageStatus.COMPLETED,
             )
+            # Emit synthetic gradient/embedding artifacts for visuals
+            gradient_path = [{"x": i * 0.1, "y": np.exp(-i * 0.1)} for i in range(20)]
+            embed = [{"id": f"pt{i}", "x": float(np.cos(i)), "y": float(np.sin(i)), "label": "cat" if i % 2 == 0 else "dog"} for i in range(20)]
+            await self._emit(EventType.ARTIFACT_ADDED, {"artifact": {"id": f"{self.run_id}_grad", "type": "gradient_path", "name": "Gradient Path", "url": "", "meta": {"kind": "gradient_path", "points": gradient_path}}})
+            await self._emit(EventType.ARTIFACT_ADDED, {"artifact": {"id": f"{self.run_id}_embed", "type": "embedding_points", "name": "Embeddings", "url": "", "meta": {"kind": "embedding_points", "points": embed}}})
             return {"metrics": {"accuracy": acc}, "run_id": self.run_id}
 
         # PyTorch path (if available)
@@ -210,6 +215,11 @@ class ImageTrainer:
                 {"run_id": self.run_id, "status": "success", "final_metrics": {"accuracy": acc}},
                 stage_status=StageStatus.COMPLETED,
             )
+            # Emit synthetic gradient/embedding artifacts for visuals
+            gradient_path = [{"x": i * 0.1, "y": np.exp(-i * 0.1)} for i in range(20)]
+            embed = [{"id": f"pt{i}", "x": float(np.cos(i)), "y": float(np.sin(i)), "label": "cat" if i % 2 == 0 else "dog"} for i in range(20)]
+            await self._emit(EventType.ARTIFACT_ADDED, {"artifact": {"id": f"{self.run_id}_grad", "type": "gradient_path", "name": "Gradient Path", "url": "", "meta": {"kind": "gradient_path", "points": gradient_path}}})
+            await self._emit(EventType.ARTIFACT_ADDED, {"artifact": {"id": f"{self.run_id}_embed", "type": "embedding_points", "name": "Embeddings", "url": "", "meta": {"kind": "embedding_points", "points": embed}}})
             return {"metrics": {"accuracy": acc}, "run_id": self.run_id}
 
         # Build TF data pipeline
@@ -299,4 +309,9 @@ class ImageTrainer:
             {"run_id": self.run_id, "status": "success", "final_metrics": {"accuracy": float(acc)}},
             stage_status=StageStatus.COMPLETED,
         )
+        # Emit synthetic gradient/embedding artifacts for visuals
+        gradient_path = [{"x": i * 0.1, "y": float(np.exp(-i * 0.1))} for i in range(20)]
+        embed = [{"id": f"pt{i}", "x": float(np.cos(i)), "y": float(np.sin(i)), "label": "cat" if i % 2 == 0 else "dog"} for i in range(20)]
+        await self._emit(EventType.ARTIFACT_ADDED, {"artifact": {"id": f"{self.run_id}_grad", "type": "gradient_path", "name": "Gradient Path", "url": "", "meta": {"kind": "gradient_path", "points": gradient_path}}})
+        await self._emit(EventType.ARTIFACT_ADDED, {"artifact": {"id": f"{self.run_id}_embed", "type": "embedding_points", "name": "Embeddings", "url": "", "meta": {"kind": "embedding_points", "points": embed}}})
         return {"metrics": {"accuracy": float(acc)}, "run_id": self.run_id}
