@@ -52,3 +52,42 @@ async def select_model(project_id: str, task_type: str = Body(..., embed=True)):
     )
 
     return {"models": models}
+
+
+"""
+Intent API - Prompt parsing and model selection.
+Placeholder - will be implemented in Phase 3.
+"""
+from fastapi import APIRouter
+
+router = APIRouter(prefix="/api/intent", tags=["intent"])
+
+
+@router.post("/parse/{project_id}")
+async def parse_prompt(project_id: str, prompt: str = ""):
+    """
+    Parse user prompt to extract intent.
+    Placeholder - returns mock data.
+    """
+    return {
+        "project_id": project_id,
+        "task_type": "classification",
+        "target": "target",
+        "constraints": [],
+        "parsed": True,
+    }
+
+
+@router.get("/models/{project_id}")
+async def get_model_candidates(project_id: str):
+    """
+    Get candidate models for the task.
+    Placeholder.
+    """
+    return {
+        "models": [
+            {"id": "random_forest", "name": "Random Forest", "family": "ensemble"},
+            {"id": "logistic_regression", "name": "Logistic Regression", "family": "linear"},
+            {"id": "gradient_boosting", "name": "Gradient Boosting", "family": "ensemble"},
+        ]
+    }

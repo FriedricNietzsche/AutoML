@@ -81,3 +81,38 @@ async def export_bundle(project_id: str):
     )
     await conductor.transition_to(project_id, StageID.EXPORT, StageStatus.COMPLETED, "Export ready")
     return {"export": asset_url(zip_path)}
+
+
+"""
+Export API - Model export and download.
+Placeholder - will be implemented in Phase 6.
+"""
+from fastapi import APIRouter
+
+export_router = APIRouter(prefix="/api/export", tags=["export"])
+
+
+@export_router.post("/bundle/{project_id}")
+async def create_export_bundle(project_id: str):
+    """
+    Create export bundle (ZIP).
+    Placeholder.
+    """
+    return {
+        "project_id": project_id,
+        "status": "creating",
+        "progress": 0,
+    }
+
+
+@export_router.get("/download/{project_id}")
+async def download_bundle(project_id: str):
+    """
+    Download export bundle.
+    Placeholder.
+    """
+    return {
+        "project_id": project_id,
+        "status": "not_ready",
+        "message": "Export bundle not yet created",
+    }

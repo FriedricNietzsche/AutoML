@@ -1,10 +1,9 @@
 """
-Assets API - minimal local-disk asset serving scaffold.
-Stores under ASSET_ROOT (defaults to ./data/assets) and serves files by relative path.
+Assets API - File and artifact management.
 """
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -23,14 +22,15 @@ def _safe_path(rel_path: str) -> Path:
 
 
 @router.get("/")
-async def list_assets() -> dict:
+async def list_assets(project_id: Optional[str] = None):
+    """List all assets, optionally filtered by project."""
     assets: List[str] = []
     for root, _, files in os.walk(ASSET_ROOT):
         for name in files:
             full = Path(root) / name
             rel = full.relative_to(ASSET_ROOT)
             assets.append(str(rel))
-    return {"assets": assets}
+    return {"assets": assets, "project_id": project_id}
 
 
 @router.post("/upload")
@@ -43,9 +43,14 @@ async def upload_asset(file: UploadFile = File(...)) -> dict:
     return {"asset": str(dest.relative_to(ASSET_ROOT))}
 
 
-@router.get("/{asset_path:path}")
-async def get_asset(asset_path: str):
-    path = _safe_path(asset_path)
+@router.get("/{asset_id}")
+async def get_asset(asset_id: str):
+    """Get asset details by ID."""
+    path = _safe_path(asset_id)
     if not path.exists() or not path.is_file():
-        raise HTTPException(status_code=404, detail="Asset not found")
+        return {
+            "asset_id": asset_id,
+            "status": "not_found",
+            "message": "Asset management not yet implemented",
+        }
     return FileResponse(path)

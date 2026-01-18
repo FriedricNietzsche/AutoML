@@ -1,29 +1,58 @@
+"""
+Stages API - Project state and stage management.
+"""
 from fastapi import APIRouter, HTTPException
 
-from ..events.schema import StageID, StageStatus
 from ..orchestrator.conductor import conductor
+from ..events.schema import StageID, StageStatus
 
 router = APIRouter(prefix="/api/projects", tags=["stages"])
 
 
 @router.get("/{project_id}/state")
 async def get_project_state(project_id: str):
-    """Return the current state snapshot for a project."""
-    return await conductor.get_state(project_id)
+    """
+    Get the current state snapshot of a project.
+    Used by frontend to hydrate on load.
+    """
+    return conductor.get_state_snapshot(project_id)
 
 
 @router.post("/{project_id}/confirm")
-async def confirm_project_stage(project_id: str):
-    """Advance to the next stage after user confirmation."""
-    return await conductor.confirm(project_id)
+async def confirm_stage(project_id: str):
+    """
+    Confirm the current stage and advance to the next.
+    """
+    try:
+        new_stage = await conductor.confirm(project_id)
+        return {
+            "status": "confirmed",
+            "new_stage": new_stage.value,
+            "project_id": project_id,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/{project_id}/stages/{stage_id}/status")
-async def set_stage_status(project_id: str, stage_id: str, status: str, message: str | None = None):
-    """Internal helper endpoint to force a stage status (useful for demos/tests)."""
+@router.post("/{project_id}/transition")
+async def transition_stage(
+    project_id: str,
+    stage_id: str,
+    status: str = "IN_PROGRESS",
+    message: str = None
+):
+    """
+    Manually transition a project to a specific stage/status.
+    """
     try:
         stage_enum = StageID(stage_id)
         status_enum = StageStatus(status)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid stage id or status")
-    return await conductor.transition_to(project_id, stage_enum, status=status_enum, message=message)
+        raise HTTPException(status_code=400, detail="Invalid stage_id or status")
+    
+    await conductor.transition_to(project_id, stage_enum, status_enum, message)
+    return {
+        "status": "transitioned",
+        "stage_id": stage_enum.value,
+        "stage_status": status_enum.value,
+    }

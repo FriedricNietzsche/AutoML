@@ -93,3 +93,51 @@ async def train_time_series(
     await conductor.transition_to(project_id, StageID.TRAIN, StageStatus.COMPLETED, "Training complete")
     await conductor.transition_to(project_id, StageID.REVIEW_EDIT, StageStatus.IN_PROGRESS, "Review artifacts")
     return result
+
+
+"""
+Training API - Model training and metrics.
+Placeholder - will be implemented in Phase 5.
+"""
+from fastapi import APIRouter
+
+router = APIRouter(prefix="/api/train", tags=["train"])
+
+
+@router.post("/start/{project_id}")
+async def start_training(project_id: str, model_id: str = "random_forest"):
+    """
+    Start model training.
+    Placeholder.
+    """
+    return {
+        "project_id": project_id,
+        "model_id": model_id,
+        "run_id": f"run_{project_id}_{model_id}",
+        "status": "started",
+    }
+
+
+@router.get("/status/{project_id}/{run_id}")
+async def get_training_status(project_id: str, run_id: str):
+    """
+    Get training run status.
+    Placeholder.
+    """
+    return {
+        "run_id": run_id,
+        "status": "running",
+        "progress": 50,
+    }
+
+
+@router.post("/stop/{project_id}/{run_id}")
+async def stop_training(project_id: str, run_id: str):
+    """
+    Stop a training run.
+    Placeholder.
+    """
+    return {
+        "run_id": run_id,
+        "status": "stopped",
+    }
