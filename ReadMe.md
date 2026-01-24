@@ -1,68 +1,117 @@
-# AutoML Agentic Builder
+# AIAI
+
+## Video Demo of AIAI
+https://github.com/user-attachments/assets/50d751b9-205e-4141-9e6a-f58265f890f0
 
 ## Overview
-The AutoML Agentic Builder is a chat-first web application designed to assist users in building machine learning models through an interactive and intuitive interface. The application guides users through a series of stages, allowing them to confirm actions and visualize the progress of their machine learning projects in real-time.
+
+**AIAI** is an autonomous system where specialized AI agents collaborate to build, train, and deploy machine learning models. This system uses an **Agentic Orchestration Engine** to reason through the data science process—profiling data, selecting architectures using Chain-of-Thought reasoning, and generating transparent, exportable Jupyter Notebooks.
+
+It features a **chat-first interface** that guides users through the entire ML lifecycle: from raw data to a deployed model, supported by real-time visualization of training metrics.
+
+## Core Architecture
+
+### The Agent Integration
+The backend is powered by a team of specialized agents:
+- **Intent Agent**: Parses natural language requests (e.g., "Build a churn predictor") into structured ML tasks.
+- **Data Profiler Agent**: analyizes datasets to detect missingness, schema types, and distribution skews.
+- **Model Selector Agent**: Uses **Zero-Shot Reasoning** to pick the best architecture (e.g., "Use XGBoost because input is tabular with high cardinality").
+- **Notebook Generator Agent**: Converts the abstract pipeline steps into clean, executable Python code (Jupyter Notebooks) that users can download.
+
+### The Stage Machine
+The system moves through a strict Finite State Machine (FSM) to ensure reliability:
+1.  **Ingestion:** Loading data from CSVs, JSON, or external URLs.
+2.  **Profiling:** Generating distribution plots, correlation matrices, and quality warnings.
+3.  **Preprocessing:** Automatic imputation, scaling, and encoding.
+4.  **Training:** Real-time streaming of loss curves and accuracy metrics via WebSockets.
+5.  **Export:** Packaging the model and code for deployment.
+
+## Tech Stack
+
+### Backend (AI & Engineering)
+*   **Framework:** FastAPI + Uvicorn
+*   **Real-time:** Socket.io for live training feedback
+*   **LLM Integration:** LangChain, OpenAI API / Google Gemini
+*   **ML Libraries:** PyTorch, Scikit-learn, XGBoost, Transformers (HuggingFace)
+*   **Processing:** Pandas, NumPy
+*   **State Management:** Redis (for pipeline state)
+
+### Frontend (User Interface)
+*   **Framework:** React 19 + Vite
+*   **Language:** TypeScript
+*   **Styling:** Tailwind CSS + Framer Motion (for animations)
+*   **Visualizations:** Recharts (loss curves), Three.js (3D elements)
+*   **Editor:** Monaco Editor (for viewing generated code)
+
+## Supported AI Models
+
+The platform automatically selects state-of-the-art models based on the data modality:
+
+### Computer Vision
+*   **ResNet50:** Transfer learning for robust image classification.
+*   **EfficientNet-B0:** For resource-constrained environments.
+*   **Vision Transformer (ViT-B/16):** For complex visual pattern recognition.
+
+### Natural Language Processing (NLP)
+*   **DistilBERT:** Fine-tuned transformer for sentiment analysis and text classification.
+*   **TF-IDF + Logistic Regression:** High-performance fallback for simpler text tasks.
+
+### Tabular / Structured Data
+*   **XGBoost:** Extreme Gradient Boosting for classification/regression.
+*   **Random Forest:** Ensemble bagging methods.
+*   **Gradient Boosting (sklearn):** Standard boosting implementations.
+*   **Linear/Logistic Regression:** Baseline models.
+
+## Quick Start
+
+### 1. Backend Setup
+```bash
+cd backend
+
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # or venv\Scripts\activate on Windows
+
+# Install dependencies (ML heavy)
+pip install -r requirements.txt
+
+# Set up environment variables
+cp .env.example .env
+# Edit .env with your OpenRouter or LLM API keys
+
+# Run the server
+uvicorn app.main:app --reload
+```
+The backend will start at `http://localhost:8000`.
+
+### 2. Frontend Setup
+```bash
+cd frontend
+
+# Install dependencies
+npm install
+
+# Run development server
+npm run dev
+```
+The UI will run at `http://localhost:5173`.
 
 ## Project Structure
-The project is divided into two main directories: `frontend` and `backend`.
 
-### Frontend
-The frontend is built using Next.js with TypeScript, Tailwind CSS, and Zustand for state management. It provides a rich user interface that allows users to interact with the application seamlessly.
-
-- **src/app**: Contains the main application pages.
-- **src/components**: Contains reusable UI components.
-- **src/lib**: Contains utility functions for API calls, WebSocket management, and state management.
-- **public**: Contains static assets.
-
-### Backend
-The backend is built using FastAPI and manages the application's business logic, API endpoints, and WebSocket connections. It handles user authentication, project management, and the orchestration of the machine learning pipeline.
-
-- **app**: Contains the main application logic, including API routes, WebSocket handling, and orchestrator logic.
-- **data**: Contains runtime data storage for projects.
-- **requirements.txt**: Lists the Python dependencies required for the backend.
-
-## Setup Instructions
-
-### Prerequisites
-- Python 3.8 or higher
-- Node.js 14 or higher
-- PostgreSQL (for production use, optional)
-
-### Backend Setup
-1. Navigate to the `backend` directory:
-   ```
-   cd backend
-   ```
-2. Install the required Python packages:
-   ```
-   pip install -r requirements.txt
-   ```
-3. Run the FastAPI application:
-   ```
-   uvicorn app.main:app --reload
-   ```
-
-### Frontend Setup
-1. Navigate to the `frontend` directory:
-   ```
-   cd frontend
-   ```
-2. Install the required Node.js packages:
-   ```
-   npm install
-   ```
-3. Run the Next.js application:
-   ```
-   npm run dev
-   ```
-
-## Usage
-- Users can log in using Supabase authentication.
-- After logging in, users can enter prompts to initiate the model-building process.
-- The application will guide users through the stages of data collection, preprocessing, training, review, and export.
-
-## Contributing
-Contributions are welcome! Please submit a pull request or open an issue for any enhancements or bug fixes.
-
-## License
-This project is licensed under the MIT License. See the LICENSE file for more details.
+```text
+├── backend/
+│   ├── app/
+│   │   ├── agents/          # AI Agents (Intent, Profiler, Model Selection)
+│   │   ├── api/             # FastAPI Routes
+│   │   ├── ml/              # Machine Learning Logic (Vision, Text, Tabular)
+│   │   ├── orchestrator/    # Pipeline State Machine & Conductor
+│   │   └── ws/              # WebSocket Connection Managers
+│   └── requirements.txt
+├── frontend/
+│   ├── src/
+│   │   ├── components/      # React UI Components
+│   │   ├── pages/           # Main Application Views
+│   │   └── lib/             # Utilities (API, Websockets)
+│   └── package.json
+└── README.md
+```
